@@ -1296,6 +1296,90 @@ function p1_proc_exit(status) {
     ((Syscalls.exit).bind(Syscalls))(status);
 }
 
+function p1_proc_raise() {
+
+    console.log("--> p1_proc_raise: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("proc_raise (TODO)\n");
+    }
+
+    //TODO
+}
+
+function p1_sched_yield() {
+
+    console.log("--> p1_sched_yield: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("sched_yield (TODO)\n");
+    }
+
+    //TODO
+}
+
+function p1_sock_accept() {
+
+    console.log("--> p1_sock_accept: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("sock_accept (TODO)\n");
+    }
+
+    //TODO
+}
+
+function p1_sock_recv() {
+
+    console.log("--> p1_sock_recv: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("sock_recv (TODO)\n");
+    }
+
+    //TODO
+}
+
+function p1_sock_send() {
+
+    console.log("--> p1_sock_send: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("sock_accept (TODO)\n");
+    }
+
+    //TODO
+}
+
+function p1_sock_shutdown() {
+
+    console.log("--> p1_sock_shutdown: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("sock_shutdown (TODO)\n");
+    }
+
+    //TODO
+}
+
 function p1_random_get(buf, size) {
 
     update_heap();
@@ -2082,11 +2166,23 @@ function p1_fd_renumber(fd) {
     //TODO
 }
 
-function p1_fd_synch(fd) {
+function p1_fd_sync(fd) {
 
     update_heap();
 
-    console.log("--> p1_fd_synch: "+arguments.length);
+    console.log("--> p1_fd_sync: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+    //TODO
+}
+
+function p1_fd_tell(fd) {
+
+    update_heap();
+
+    console.log("--> p1_fd_tell: "+arguments.length);
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
@@ -2104,6 +2200,80 @@ function p1_path_create_directory(dirfd, path, path_len) {
 	console.log(arguments[i]);
 
     return (Syscalls.mkdirat).bind(Syscalls)(dirfd, path, path_len);
+}
+
+function p1_path_filestat_get() {
+
+    update_heap();
+
+    console.log("--> p1_path_filestat_get: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+}
+
+function p1_path_filestat_set_times() {
+
+    update_heap();
+
+    console.log("--> p1_path_filestat_set_times: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+}
+
+function p1_path_link() {
+
+    update_heap();
+
+    console.log("--> p1_path_link: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+}
+
+function p1_path_readlink() {
+
+    update_heap();
+
+    console.log("--> p1_path_link: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+
+}
+
+function p1_path_remove_directory() {
+
+    update_heap();
+
+    console.log("--> p1_path_remove_directory: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+}
+
+function p1_path_rename() {
+
+    update_heap();
+
+    console.log("--> p1_path_rename: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
+}
+
+function p1_path_symlink() {
+
+    update_heap();
+
+    console.log("--> p1_path_symlink: "+arguments.length);
+    
+    for (let i = 0; i < arguments.length; ++i)
+	console.log(arguments[i]);
 }
 
 const wasi_preview1 = {
@@ -2134,13 +2304,27 @@ const wasi_preview1 = {
     fd_renumber: p1_fd_renumber,
     fd_seek: p1_fd_seek,
     fd_sync: p1_fd_sync,
+    fd_tell: p1_fd_tell,
     fd_write: p1_fd_write,
+    path_create_directory: p1_path_create_directory,
+    path_filestat_get: p1_path_filestat_get,
+    path_filestat_set_times: p1_path_filestat_set_times,
+    path_link: p1_path_link,
     path_open: p1_path_open,
+    path_readlink: p1_path_readlink,
+    path_remove_directory: p1_path_remove_directory,
+    path_rename: p1_path_rename,
+    path_symlink: p1_path_symlink,
     path_unlink_file: p1_path_unlink_file,
     poll_oneoff: p1_poll_oneoff,
     proc_exit: p1_proc_exit,
+    proc_raise: p1_proc_raise,
+    sched_yield: p1_sched_yield,
     random_get: p1_random_get,
-    path_create_directory: p1_path_create_directory,
+    sock_accept: p1_sock_accept,
+    sock_recv: p1_sock_recv,
+    sock_send: p1_sock_send,
+    sock_shutdown: p1_sock_shutdown
 };
 
 const wasi_preview2 = {
