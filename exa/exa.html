@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+
+    <style>
+
+      html, body {
+
+	  margin : 0;
+	  padding: 0;
+	  border: none;
+	  width: 100%;
+	  height: 100%;
+      }
+      
+    </style>
+    
+    <script src="../js/exa_api.js"></script>
+
+  </head>
+
+<body>
+
+  <script>
+
+    console.log("Starting wex 0.2.0 ...");
+
+    const pid = parseInt(window.frameElement.getAttribute('pid'));
+
+    function write_error(error, callback) {
+
+	exa.IsOpen(2).then(function([remote_fd, peer]) {
+
+	    exa.write(remote_fd, peer, error).then(function(bytes_written) {
+
+		if (callback) {
+
+		    callback();
+		}
+		else {
+		    exa.exit(-1);
+		}
+		
+	    }, function() {
+
+		if (callback) {
+
+		    callback();
+		}
+		else {
+		    exa.exit(-1);
+		}
+	    });
+	    
+	}, function() {
+
+	    if (callback) {
+
+		callback();
+	    }
+	    else {
+		exa.exit(-1);
+	    }
+	});
+    }
+
+    function print_help() {
+
+	const help = `Usage: wex [options] filename
+
+  WebAssembly WASI runtime (0.1 & 0.2)
+
+options:
+  -h, --help                                   Print this help message
+  -v, --version                                Print version information
+  -t, --trace                                  Print syscalls\n`;
+
+	write_error(help, () => { exa.exit(0); });
+
+    }
+
+    function print_version() {
+
+	const version = "wex 0.2.0\n";
+	
+	write_error(version, () => { exa.exit(0); });
+    }
+
+    function parse_args(args) {
+
+	let input = "";
+	let trace = false;
+	let info = false;
+
+	let i = 0;
+
+	for (let arg of args.slice(1)) {
+
+	    i++;
+
+	    if ( (arg === "--help") || (arg === "-h") ) {
+
+		print_help();
+		return [ null ];
+	    }
+	    else if ( (arg === "--version") || (arg === "-v") ) {
+
+		print_version();
+		return [ null ];
+	    }
+	    else if ( (arg === "--trace") || (arg === "-t") ) {
+
+		trace = true;
+	    }
+	    else if ( (arg === "--info") || (arg === "-i") ) {
+
+		info = true;
+	    }
+	    else if (arg.indexOf("-") == 0) {
+
+		write_error("Unknown option '"+arg+"'\n", () => { print_help() });
+		return [ null ];
+	    }
+	    else if (input === "") {
+
+		input = arg;
+		break;
+	    }
+	}
+
+	if (input === "") {
+
+	    print_help();
+	    return [ null ];
+	}
+
+	return [input, i, trace, info];
+    }
+
+    function start_worker(wasm, input_pos, trace, info) {
+
+	const sharedEventBuffer = new SharedArrayBuffer(4);
+	const sharedEventArray = new Int32Array(sharedEventBuffer);
+
+	const sharedDataBuffer = new SharedArrayBuffer(1024*1024);
+	const sharedDataArray = new Uint8Array(sharedDataBuffer);
+	
+	sharedEventArray[0] = 0;
+
+	const rcv_bc = new BroadcastChannel("channel.process."+pid);
+
+	rcv_bc.onmessage = function(event) {
+
+	    console.log("Main: rcv_bc msg");
+	    
+	    console.log(event.data.buf[0]);
+	    console.log(event.data.buf.length);
+
+	    if (sharedEventArray[0] == 0) {
+
+		sharedDataArray.set(event.data.buf);
+
+		Atomics.store(sharedEventArray, 0, event.data.buf[0]);
+		Atomics.notify(sharedEventArray, 0);
+	    }
+	};
+
+	var timers = {};
+	
+	var select_timer;
+
+	/*const bc = new BroadcastChannel("bc");
+
+	  bc.onmessage = function(event) {
+
+	  //console.log("Main: bc msg");
+	  console.log(event.data);
+
+	  setTimeout(() => {
+
+	  Atomics.store(sharedEventArray, 0, 1);
+	  Atomics.notify(sharedEventArray, 0);
+	  
+	  }, 100);
+	  };*/
+	
+
+	const worker = new Worker('../js/wasmWorker.js');
+
+	worker.addEventListener('message', message => {
+	    
+	    console.log('message', message);
+	    console.log(message.data);
+
+	    if (message.data.op == 'subscribe_duration') {
+
+		timers[message.data.fd] = message.data;
+
+		message.data.elapsed = false;
+		message.data.polled = false;
+
+		setTimeout((function(_timer) {
+
+		    return function () {
+
+			console.log("timer elapsed");
+			console.log(_timer);
+
+			_timer.elapsed = true;
+
+			if (_timer.polled) {
+
+			    console.log("timer polled "+_timer.fd);
+
+			    Atomics.store(sharedEventArray, 0, _timer.fd);
+			    Atomics.notify(sharedEventArray, 0);
+			}
+
+		    };
+
+		})(message.data), message.data.duration);
+		
+	    }
+	    else if (message.data.op == 'poll') {
+
+		for (let _fd of message.data.fds) {
+
+		    if ('timeout' in _fd) {
+
+			console.log("poll with timeout: duration="+_fd.timeout);
+
+			if (_fd.timeout > 2147483647) {
+			    _fd.timeout = 2147483647;
+			}
+
+			setTimeout(function () {
+
+			    console.log("poll timeout");
+
+			    Atomics.store(sharedEventArray, 0, -1);
+			    Atomics.notify(sharedEventArray, 0);
+			    
+			}, _fd.timeout);
+		    }
+		    else if ( (_fd.fd in timers) && timers[_fd.fd].elapsed) {
+
+			console.log("timer already elapsed");
+			
+			Atomics.store(sharedEventArray, 0, _fd.fd);
+			Atomics.notify(sharedEventArray, 0);
+
+			break;
+		    }
+		    else {
+
+			timers[_fd.fd].polled = true;
+		    }
+		}
+	    }
+	    else if (message.data.op == 'select_timer') {
+
+		console.log("select_timer: dur="+message.data.duration);
+
+		if (message.data.duration >= 0) {
+
+		    if (message.data.duration > 2147483647) {
+			message.data.duration = 2147483647;
+		    }
+
+		    select_timer = setTimeout(function () {
+			
+			const fd = -1;
+
+			sharedDataArray[0] = 31|128;
+
+			sharedDataArray[12] = fd & 0xff;
+			sharedDataArray[13] = (fd >> 8) & 0xff;
+			sharedDataArray[14] = (fd >> 16) & 0xff;
+			sharedDataArray[15] = (fd >> 24) & 0xff;
+
+			Atomics.store(sharedEventArray, 0, 31|128); // Return select
+			Atomics.notify(sharedEventArray, 0);
+			
+
+		    }, message.data.duration);
+		}
+		else if (select_timer) {
+
+		    clearTimeout(select_timer);
+		    select_timer = null;
+		}
+	    }
+	    
+	});
+
+	let args = exa.args.slice(input_pos).join(" ");
+
+	args += " "; // finish by space
+
+	worker.postMessage({pid: pid, eventBuf: sharedEventBuffer, dataBuf: sharedDataBuffer, file: wasm, args: args, env_count: window.frameElement.getAttribute('env_count'), env_size: window.frameElement.getAttribute('env_size'), env_buf: window.frameElement.getAttribute('env_buf'), trace: trace, info: info});
+	
+    }
+    
+    exa.init();
+
+    exa.args_env().then(function() {
+
+	console.log(exa.args);
+
+	const [path, pos, trace, info] = parse_args(exa.args);
+
+	if (path) {
+
+	    exa.open(path, 0 /* O_RDONLY */, 0).then(function([fd, remote_fd, peer]) {
+
+		console.log("file opened successfully");
+
+		exa.read(remote_fd, peer).then(function(buffer) {
+
+		    console.log("File read: "+buffer.length+" bytes");
+
+		    exa.close(fd).then(function() {
+
+			start_worker(buffer, pos, trace, info);
+			
+		    }, function() {
+
+			
+		    });
+
+		}, function() {
+
+		    console.log("Unable to read file");
+
+		    exa.close(fd).then(function() {
+
+		    }, function() {
+
+		    });
+		});
+		
+	    }, function() {
+
+		write_error("File '"+path+"' not found\n");
+	    });
+	}
+
+    });
+
+    
+
+    
+    
+      
+
+    
+
+    
+  </script>
+  </body>
+</html>
