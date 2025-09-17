@@ -38,7 +38,7 @@ function update_heap() {
 
 function print_trace(str) {
 
-    const buf = new TextEncoder().encode("[TRACE] " + str);
+    const buf = new TextEncoder().encode("\n[TRACE] " + str+"\n");
 
     ((Syscalls.blocking_write_and_flush).bind(Syscalls))(2, buf, buf.length, 0);
 }
@@ -1285,12 +1285,14 @@ function resource_drop_terminal_output() {
 function p1_proc_exit(status) {
 
     console.log("--> p1_proc_exit: "+arguments.length);
+
+    
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
     if (trace) {
-	print_trace("proc_exit status="+status+"\n");
+	print_trace("p1::proc_exit status="+status);
     }
 
     ((Syscalls.exit).bind(Syscalls))(status);
@@ -1304,7 +1306,7 @@ function p1_proc_raise() {
 	console.log(arguments[i]);
 
     if (trace) {
-	print_trace("proc_raise (TODO)\n");
+	print_trace("p1::proc_raise");
     }
 
     //TODO
@@ -1318,7 +1320,7 @@ function p1_sched_yield() {
 	console.log(arguments[i]);
 
     if (trace) {
-	print_trace("sched_yield (TODO)\n");
+	print_trace("p1::sched_yield");
     }
 
     //TODO
@@ -1332,7 +1334,7 @@ function p1_sock_accept() {
 	console.log(arguments[i]);
 
     if (trace) {
-	print_trace("sock_accept (TODO)\n");
+	print_trace("p1::sock_accept");
     }
 
     //TODO
@@ -1346,7 +1348,7 @@ function p1_sock_recv() {
 	console.log(arguments[i]);
 
     if (trace) {
-	print_trace("sock_recv (TODO)\n");
+	print_trace("p1::sock_recv");
     }
 
     //TODO
@@ -1360,7 +1362,7 @@ function p1_sock_send() {
 	console.log(arguments[i]);
 
     if (trace) {
-	print_trace("sock_accept (TODO)\n");
+	print_trace("p1::sock_send");
     }
 
     //TODO
@@ -1374,7 +1376,7 @@ function p1_sock_shutdown() {
 	console.log(arguments[i]);
 
     if (trace) {
-	print_trace("sock_shutdown (TODO)\n");
+	print_trace("p1::sock_shutdown");
     }
 
     //TODO
@@ -1389,6 +1391,10 @@ function p1_random_get(buf, size) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::random_get buf="+buf+" size="+size);
+    }
+
     for (let i=0; i < size; i++) {
 
 	HEAPU8[buf+i] = Math.floor(Math.random() * 256);
@@ -1402,6 +1408,10 @@ function p1_fd_prestat_get(fd, retptr) {
     update_heap();
 
     console.log("--> p1_fd_prestat_get: fd="+fd+", retptr="+retptr);
+
+    if (trace) {
+	print_trace("p1::fd_prestat_get fd="+fd+" retptr="+retptr);
+    }
 
     if (!(fd in preOpens)) {
 	
@@ -1420,6 +1430,10 @@ function p1_fd_prestat_dir_name(fd, buf, len) {
     update_heap();
 
     console.log("--> p1_fd_prestat_dir_name: fd="+fd+", buf="+buf+", len="+len);
+
+    if (trace) {
+	print_trace("p1::fd_prestat_dir_name fd="+fd+" buf="+buf+" len="+len);
+    }
 
     if (!(fd in preOpens)) {
 	
@@ -1440,7 +1454,11 @@ function p1_path_open(dirfd, path_flags, path, path_len, open_flags, fs_rights_b
     console.log("--> p1_path_open: "+arguments.length);
     
     for (let i = 0; i < arguments.length; ++i)
-    console.log(arguments[i]);
+	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::path_open dirfd="+dirfd+" path_flags="+path_flags+" path="+path+" path_len="+path_len+" open_flags="+open_flags+" fs_rights_base="+fs_rights_base+" fs_rights_inheriting="+fs_rights_inheriting+" fdflags="+fdflags+" retptr="+retptr);
+    }
 
     let posix_flags = 0;
 
@@ -1511,6 +1529,10 @@ function p1_path_unlink_file(dirfd, path, path_len) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::path_unlink_file dirfd="+dirfd+" path="+path+" path_len="+path_len);
+    }
+
     return (Syscalls.unlinkat).bind(Syscalls)(dirfd, path, path_len);
 }
 
@@ -1521,6 +1543,10 @@ function p1_fd_advise(fd) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::fd_advise fd="+fd);
+    }
+
     // TODO
 }
 
@@ -1530,6 +1556,10 @@ function p1_fd_allocate(fd) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_allocate fd="+fd);
+    }
 
     // TODO
 }
@@ -1542,6 +1572,10 @@ function p1_fd_close(fd) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::fd_close fd="+fd);
+    }
+
     return ((Syscalls.close).bind(Syscalls))(fd);
 }
 
@@ -1551,6 +1585,10 @@ function p1_fd_datasync(fd) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_datasync fd="+fd);
+    }
 
     // TODO
 }
@@ -1563,6 +1601,10 @@ function p1_fd_readdir(fd, buf, len, cookie, retptr) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_readdir fd="+fd+" buf="+buf+" len="+len+" cookie="+cookie+" retptr="+retptr);
+    }
 
     if (!(fd in p1_fd_readdir_entries)) {
 
@@ -1697,6 +1739,10 @@ function p1_fd_read(fd, iovs, iovs_len, retptr) {
     update_heap();
 
     console.log("--> p1_fd_read: "+arguments.length);
+
+    if (trace) {
+	print_trace("p1::fd_read fd="+fd+" iovs="+iovs+" iovs_len="+iovs_len+" retptr="+retptr);
+    }
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
@@ -1773,7 +1819,7 @@ function p1_fd_write(fd, iovs, len, retptr) {
     console.log("--> p1_fd_write: "+fd+", "+iovs+", "+len+", "+retptr);
 
     if (trace) {
-	print_trace("fd_write fd="+fd+" iovs="+iovs+" len="+len+" retptr="+retptr+"\n");
+	print_trace("p1::fd_write fd="+fd+" iovs="+iovs+" len="+len+" retptr="+retptr);
     }
 
     let nb_bytes_written = 0;
@@ -1810,7 +1856,11 @@ function p1_fd_seek(fd, offset, whence, retptr) {
     console.log("--> p1_fd_seek: "+arguments.length);
     
     for (let i = 0; i < arguments.length; ++i)
-    console.log(arguments[i]);
+	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_seek fd="+fd+" offset="+offset+" whence="+whence+" retptr="+retptr);
+    }
 
     let off = (Syscalls.lseek).bind(Syscalls)(fd, Number(offset), whence);
 
@@ -1834,6 +1884,10 @@ function p1_poll_oneoff(_in, out, nsubscriptions, retptr) {
 	console.log(arguments[i]);
 
     console.log(HEAPU8.subarray(_in, _in+128));
+
+    if (trace) {
+	print_trace("p1::poll_oneoff in="+_in+" out="+out+" nsubscriptions="+nsubscriptions+" retptr="+retptr);
+    }
 
     const sub_size = 40;
 
@@ -1910,6 +1964,10 @@ function p1_environ_sizes_get(count, size) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::environ_sizes_get count="+count+" size="+size);
+    }
+
     setI32(HEAPU8, count, env_count);
     setI32(HEAPU8, size, env_size);
 
@@ -1924,6 +1982,10 @@ function p1_environ_get(ptrs, buf) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::environ_get ptrs="+ptrs+" buf="+buf);
+    }
 
     let ptrs_off = 0;
     let buf_off = 0;
@@ -1961,6 +2023,10 @@ function p1_clock_res_get(id) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::clock_res_get id="+id);
+    }
+
     //TODO
 }
 
@@ -1973,6 +2039,10 @@ function p1_clock_time_get(id, precision, retptr) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::clock_time_get id="+id+" precision="+precision+" retptr="+retptr);
+    }
+
     const t = Date.now(); // ms
 
     setI64(HEAPU8, retptr, BigInt(t)*1000000n); // ns
@@ -1982,10 +2052,10 @@ function p1_args_sizes_get(argc, argv_buf_size) {
 
     update_heap();
     
-    console.log("--> p1_args_sizes_get: argc="+argc+", argv_buf_size="+argv_buf_size);
+    console.log("--> p1_args_sizes_get: argc="+argc+" argv_buf_size="+argv_buf_size);
 
     if (trace) {
-	print_trace("args_sizes_get argc="+argc+", argv_buf_size="+argv_buf_size+"\n");
+	print_trace("p1::args_sizes_get argc="+argc+" argv_buf_size="+argv_buf_size);
     }
 
     let _argc = 0;
@@ -2010,8 +2080,12 @@ function p1_args_get(argv, argv_buf) {
 
     update_heap();
     
-    console.log("--> p1_args_get: argv="+argv+", argv_buf="+argv_buf);
+    console.log("--> p1_args_get: argv="+argv+" argv_buf="+argv_buf);
     console.log(args);
+
+    if (trace) {
+	print_trace("p1::args_get argv="+argv+" argv_buf="+argv_buf);
+    }
 
     let index = 0;
     let offset = 0;
@@ -2044,6 +2118,10 @@ function p1_fd_fdstat_get(fd, retptr) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_fdstat_get fd="+fd+" retptr="+retptr);
+    }
 
     let arr = new Uint8Array(128);
 
@@ -2079,6 +2157,10 @@ function p1_fd_fdstat_set_flags(fd) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::fd_fdstat_set_flags fd="+fd);
+    }
+
     //TODO
 }
 
@@ -2090,6 +2172,10 @@ function p1_fd_fdstat_set_rights(fd) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_fdstat_set_rights fd="+fd);
+    }
 
     //TODO
 }
@@ -2103,6 +2189,10 @@ function p1_fd_filestat_get(fd) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::fd_filestat_get fd="+fd);
+    }
+
     //TODO
 }
 
@@ -2114,6 +2204,10 @@ function p1_fd_filestat_set_size(fd) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_filestat_set_size fd="+fd);
+    }
 
     //TODO
 }
@@ -2127,6 +2221,10 @@ function p1_fd_filestat_set_times(fd) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::fd_filestat_set_times fd="+fd);
+    }
+
     //TODO
 }
 
@@ -2138,6 +2236,10 @@ function p1_fd_pread(fd) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_pread fd="+fd);
+    }
 
     //TODO
 }
@@ -2151,6 +2253,10 @@ function p1_fd_pwrite(fd) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::fd_pwrite fd="+fd);
+    }
+
     //TODO
 }
 
@@ -2162,6 +2268,10 @@ function p1_fd_renumber(fd) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_renumber fd="+fd);
+    }
 
     //TODO
 }
@@ -2175,6 +2285,10 @@ function p1_fd_sync(fd) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::fd_sync fd="+fd);
+    }
+
     //TODO
 }
 
@@ -2186,6 +2300,10 @@ function p1_fd_tell(fd) {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::fd_tell fd="+fd);
+    }
 
     //TODO
 }
@@ -2199,6 +2317,10 @@ function p1_path_create_directory(dirfd, path, path_len) {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::path_create_directory dirfd="+dirfd+" path="+path+" path_len="+path_len);
+    }
+
     return (Syscalls.mkdirat).bind(Syscalls)(dirfd, path, path_len);
 }
 
@@ -2211,6 +2333,12 @@ function p1_path_filestat_get() {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::path_filestat_get");
+    }
+
+    //TODO
+
 }
 
 function p1_path_filestat_set_times() {
@@ -2221,6 +2349,12 @@ function p1_path_filestat_set_times() {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::path_filestat_set_times");
+    }
+
+    //TODO
 
 }
 
@@ -2233,6 +2367,11 @@ function p1_path_link() {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+    if (trace) {
+	print_trace("p1::path_link");
+    }
+    
+    //TODO
 }
 
 function p1_path_readlink() {
@@ -2244,6 +2383,13 @@ function p1_path_readlink() {
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
+
+    if (trace) {
+	print_trace("p1::path_readlink");
+    }
+    
+    //TODO
+
 }
 
 function p1_path_remove_directory() {
@@ -2254,6 +2400,12 @@ function p1_path_remove_directory() {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::path_remove_directory");
+    }
+
+    //TODOO
 }
 
 function p1_path_rename() {
@@ -2264,6 +2416,12 @@ function p1_path_rename() {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::path_rename");
+    }
+
+    //TODO
 }
 
 function p1_path_symlink() {
@@ -2274,11 +2432,16 @@ function p1_path_symlink() {
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
+
+    if (trace) {
+	print_trace("p1::path_symlink");
+    }
+
+    //TODO
 }
 
 const wasi_preview1 = {
 
-    //adapter_close_badfd: (Syscalls.adapter_close_badfd).bind(Syscalls),
     args_get: p1_args_get,
     args_sizes_get: p1_args_sizes_get,
     environ_get: p1_environ_get,
