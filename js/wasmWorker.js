@@ -4,7 +4,7 @@ var memory;
 var old_buffer;
 var HEAPU8;
 
-var args, env_count, env_size, env_buf;
+var args, env_count, env_size, env;
 
 var read_ptr = 0; // for Fixing blocking read ptr (wasi 0.2) : it is set by fd_read (wasi 0.1)
 
@@ -36,9 +36,9 @@ function update_heap() {
     }
 }
 
-function print_trace(str) {
+function print_trace(str, newline = true) {
 
-    const buf = new TextEncoder().encode("\n[TRACE] " + str+"\n");
+    const buf = new TextEncoder().encode((newline?"\n":"")+"[TRACE] " + str+"\n");
 
     ((Syscalls.blocking_write_and_flush).bind(Syscalls))(2, buf, buf.length, 0);
 }
@@ -1458,6 +1458,10 @@ function p1_path_open(dirfd, path_flags, path, path_len, open_flags, fs_rights_b
 
     if (trace) {
 	print_trace("p1::path_open dirfd="+dirfd+" path_flags="+path_flags+" path="+path+" path_len="+path_len+" open_flags="+open_flags+" fs_rights_base="+fs_rights_base+" fs_rights_inheriting="+fs_rights_inheriting+" fdflags="+fdflags+" retptr="+retptr);
+
+	let td = new TextDecoder("utf-8");
+	
+	print_trace("path="+td.decode(HEAPU8.subarray(path, path+path_len)), false);
     }
 
     let posix_flags = 0;
@@ -1992,10 +1996,6 @@ function p1_environ_get(ptrs, buf) {
 
     let last_char = 0;
 
-    let env_chars = env_buf.split(',');
-
-    console.log(env_chars);
-
     for (let i=0; i < env_size; ++i) {
 
 	if (last_char == 0) {
@@ -2004,7 +2004,7 @@ function p1_environ_get(ptrs, buf) {
 	    ptrs_off += 4;
 	}
 
-	last_char = parseInt(env_chars[i]);
+	last_char = env[i];
 
 	HEAPU8[buf+buf_off] = last_char;
 
@@ -2735,7 +2735,7 @@ self.onmessage = function(event) {
 
     env_count = event.data.env_count;
     env_size = event.data.env_size;
-    env_buf = event.data.env_buf;
+    env = event.data.env;
 
     trace = event.data.trace;
     info = event.data.info;

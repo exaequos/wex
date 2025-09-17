@@ -138,6 +138,13 @@ exa.args_env = function() {
 
 		this.env_size = msg2.buf[i+4] | (msg2.buf[i+5] << 8) | (msg2.buf[i+6] << 16) |  (msg2.buf[i+7] << 24);
 
+		this.env = msg2.buf.slice(i+8,i+8+this.env_size);
+
+		console.log(this.env_count);
+		console.log(this.env_size);
+
+		console.log(this.env);	
+
 		/*Module['env'] = {
 
 			count: env_count,

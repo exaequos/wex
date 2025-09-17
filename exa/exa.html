@@ -299,7 +299,7 @@ options:
 
 	args += " "; // finish by space
 
-	worker.postMessage({pid: pid, eventBuf: sharedEventBuffer, dataBuf: sharedDataBuffer, file: wasm, args: args, env_count: window.frameElement.getAttribute('env_count'), env_size: window.frameElement.getAttribute('env_size'), env_buf: window.frameElement.getAttribute('env_buf'), trace: trace, info: info});
+	worker.postMessage({pid: pid, eventBuf: sharedEventBuffer, dataBuf: sharedDataBuffer, file: wasm, args: args, env_count: exa.env_count, env_size: exa.env_size, env: exa.env, trace: trace, info: info});
 	
     }
     
