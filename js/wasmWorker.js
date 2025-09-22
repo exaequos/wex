@@ -1414,6 +1414,10 @@ function p1_fd_prestat_get(fd, retptr) {
     }
 
     if (!(fd in preOpens)) {
+
+	if (trace) {
+	    print_trace("<- ret=ERRNO_BADF", false);
+	}
 	
 	return 8; // __WASI_ERRNO_BADF
     }
@@ -1421,28 +1425,40 @@ function p1_fd_prestat_get(fd, retptr) {
     HEAPU8[retptr] = preOpens[fd].type;
     
     setI32(HEAPU8, retptr+4, preOpens[fd].path.length);
+
+    if (trace) {
+	print_trace("<- ret=ERRNO_SUCCESS type="+preOpens[fd].type+" len="+preOpens[fd].path.length, false);
+    }
     
     return 0; // __WASI_ERRNO_SUCCESS
 }
 
-function p1_fd_prestat_dir_name(fd, buf, len) {
+function p1_fd_prestat_dir_name(fd, path, path_len) {
 
     update_heap();
 
-    console.log("--> p1_fd_prestat_dir_name: fd="+fd+", buf="+buf+", len="+len);
+    console.log("--> p1_fd_prestat_dir_name: fd="+fd+", path="+path+", path_len="+path_len);
 
     if (trace) {
-	print_trace("p1::fd_prestat_dir_name fd="+fd+" buf="+buf+" len="+len);
+	print_trace("p1::fd_prestat_dir_name fd="+fd+" path="+path+" path_len="+path_len);
     }
 
     if (!(fd in preOpens)) {
+
+	if (trace) {
+	    print_trace("<- ret=ERRNO_BADF", false);
+	}
 	
 	return 8; // __WASI_ERRNO_BADF
     }
 
     const uint8array = new TextEncoder("utf-8").encode(preOpens[fd].path);
 
-    HEAPU8.set(uint8array.subarray(0, len), buf);
+    HEAPU8.set(uint8array.subarray(0, path_len), path);
+
+    if (trace) {
+	print_trace("<- ret=ERRNO_SUCCESS path="+preOpens[fd].path, false);
+    }
 
     return 0; // __WASI_ERRNO_SUCCESS
 }
@@ -1516,10 +1532,18 @@ function p1_path_open(dirfd, path_flags, path, path_len, open_flags, fs_rights_b
 
     if (fd < 0) {
 
+	if (trace) {
+	    print_trace("<- ret="+(-fd), false);
+	}
+
 	return -fd;
     }
     
     setI32(HEAPU8, retptr, fd);
+
+    if (trace) {
+	print_trace("<- fd="+fd, false);
+    }
 
     return 0;
 }
@@ -2046,6 +2070,10 @@ function p1_clock_time_get(id, precision, retptr) {
     const t = Date.now(); // ms
 
     setI64(HEAPU8, retptr, BigInt(t)*1000000n); // ns
+
+    if (trace) {
+	print_trace("<- ret="+t, false);
+    }
 }
 
 function p1_args_sizes_get(argc, argv_buf_size) {
@@ -2072,6 +2100,10 @@ function p1_args_sizes_get(argc, argv_buf_size) {
 
     setI32(HEAPU8, argc, _argc);
     setI32(HEAPU8, argv_buf_size, args.length);
+
+    if (trace) {
+	print_trace("<- argc="+_argc+" size="+args.length, false);
+    }
 
     return 0;
 }
@@ -2142,7 +2174,15 @@ function p1_fd_fdstat_get(fd, retptr) {
 	setI64(HEAPU8, retptr+8, BigInt(0xffffffff)); // fs_rights_base
 	setI64(HEAPU8, retptr+16, BigInt(0xffffffff)); // fs_rights_inheriting
 
+	if (trace) {
+	    print_trace("<- ret=ERRNO_SUCCESS", false);
+	}
+
 	return 0;
+    }
+
+    if (trace) {
+	print_trace("<- ret=ERRNO_BADF", false);
     }
 
     return 8; // __WASI_ERRNO_BADF
@@ -2324,7 +2364,7 @@ function p1_path_create_directory(dirfd, path, path_len) {
     return (Syscalls.mkdirat).bind(Syscalls)(dirfd, path, path_len);
 }
 
-function p1_path_filestat_get() {
+function p1_path_filestat_get(fd, flags, path, path_len, retptr) {
 
     update_heap();
 
@@ -2334,10 +2374,46 @@ function p1_path_filestat_get() {
 	console.log(arguments[i]);
 
     if (trace) {
-	print_trace("p1::path_filestat_get");
+	
+	print_trace("p1::path_filestat_get fd="+fd+" flags="+flags+" path="+path+" path_len="+path_len+" retptr="+retptr);
+
+	let td = new TextDecoder("utf-8");
+
+	let str_path = td.decode(HEAPU8.subarray(path, path+path_len));
+	
+	print_trace("path="+str_path, false);
     }
 
-    //TODO
+    let arr = new Uint8Array(128);
+
+    const len = (Syscalls.fstatat).bind(Syscalls)(fd, path, path_len, flags, arr);
+    
+    console.log("<-- fstat: len="+len);
+
+    console.log(arr);
+
+    if (len >= 0) {
+
+	//const mode = getI32(arr, 12);
+
+	//console.log("mode="+mode+", desc_type="+desc_type(mode));
+
+	//HEAPU8[retptr] = desc_type(mode);
+
+	HEAPU8.set(arr.subarray(0, len), retptr);
+
+	if (trace) {
+	    print_trace("<- ret=ERRNO_SUCCESS", false);
+	}
+
+	return 0;
+    }
+
+    if (trace) {
+	print_trace("<- ret=ERRNO_BADF", false);
+    }
+
+    return 8; // __WASI_ERRNO_BADF
 
 }
 

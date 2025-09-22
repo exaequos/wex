@@ -929,6 +929,116 @@ const Syscalls = {
 	return handleFstatResponse(this.sharedDataArray);
     },
 
+    fstatat(fd, path, len, flags, retptr) {
+
+	let do_fstatat = () => {
+		
+	    let buf_size = 1256;
+	    
+	    let buf2 = new Uint8Array(buf_size);
+	    
+	    buf2[0] = 67; // FSTATAT
+	    
+	    let pid = this.pid;
+	    
+	    // pid
+	    buf2[4] = pid & 0xff;
+	    buf2[5] = (pid >> 8) & 0xff;
+	    buf2[6] = (pid >> 16) & 0xff;
+	    buf2[7] = (pid >> 24) & 0xff;
+
+	    let remote_fd = (fd == -100)?-100: this.fd_table[fd].remote_fd;
+	    
+	    // remote_fd
+	    buf2[12] = remote_fd & 0xff;
+	    buf2[13] = (remote_fd >> 8) & 0xff;
+	    buf2[14] = (remote_fd >> 16) & 0xff;
+	    buf2[15] = (remote_fd >> 24) & 0xff;
+
+	    buf2[16] = flags & 0xff;
+	    buf2[17] = (flags >> 8) & 0xff;
+	    buf2[18] = (flags >> 16) & 0xff;
+	    buf2[19] = (flags >> 24) & 0xff;
+
+	    buf2[20] = len & 0xff;
+	    buf2[21] = (len >> 8) & 0xff;
+	    buf2[22] = (len >> 16) & 0xff;
+	    buf2[23] = (len >> 24) & 0xff;
+
+	    if (typeof path == "string") {
+
+		for (let i = 0; i < len; i++) {
+
+		    buf2[24+i]  = path.charCodeAt(i);
+		}
+	    }
+	    else {
+
+		buf2.set(HEAPU8.subarray(path, path+len), 24);
+	    }
+
+	    buf2[24+len] = 0; // add trailing zero
+
+	    let msg = {
+		
+		from: this.rcv_bc_channel_name,
+		buf: buf2,
+		len: buf_size
+	    };
+
+	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    
+	    driver_bc.postMessage(msg);
+	};
+
+	if ( (fd in this.fd_table) && (this.fd_table[fd]) ) {
+
+	    do_fstatat();
+	}
+	else {
+
+	    if (this.is_open(fd) >= 0) {
+
+		do_fstatat();
+	    }
+	    else {
+
+		return -1;
+	    }
+	}
+
+	Atomics.wait(this.sharedEventArray, 0, 0);
+
+	console.log("Worker: rcv_bc msg: "+this.sharedEventArray[0]);
+
+	Atomics.store(this.sharedEventArray, 0, 0);
+
+	console.log(this.sharedDataArray);
+
+	function handleFstatatResponse(buf) {
+
+	    if (buf[0] == (67|0x80)) {
+
+		const _errno = buf[8] | (buf[9] << 8) | (buf[10] << 16) |  (buf[11] << 24);
+
+		if (_errno == 0) {
+
+		    let len = buf[16] | (buf[17] << 8) | (buf[18] << 16) |  (buf[19] << 24);
+
+		    retptr.set(buf.subarray(20, 20+len));
+
+		    return len;
+		}
+
+		return -_errno;
+	    }
+
+	    return -1;
+	}
+
+	return handleFstatatResponse(this.sharedDataArray);
+    },
+
     exit(status) {
 
 	let buf_size = 20;
