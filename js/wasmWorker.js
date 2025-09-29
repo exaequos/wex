@@ -346,11 +346,76 @@ function desc_type(mode) {
 #define FILESYSTEM_DESCRIPTOR_TYPE_SOCKET 7
 */
 
-    if (mode & 0100000) {
+    if ((mode & 0170000) == 0100000) {
 	return 6; // type = regular file
     }
-    else if (mode & 0040000) {
+    else if ((mode & 0170000) == 0040000) {
 	return 3; // type = directory
+    }
+    else if ((mode & 0170000) == 0020000) {
+	return 2; // type = character device
+    }
+    else if ((mode & 0170000) == 0060000) {
+	return 1; // type = block device
+    }
+    
+    return 0; // unknwown
+}
+
+function file_type(mode) {
+
+    /*
+#define __WASI_FILETYPE_UNKNOWN (UINT8_C(0))
+#define __WASI_FILETYPE_BLOCK_DEVICE (UINT8_C(1))
+#define __WASI_FILETYPE_CHARACTER_DEVICE (UINT8_C(2))
+#define __WASI_FILETYPE_DIRECTORY (UINT8_C(3))
+#define __WASI_FILETYPE_REGULAR_FILE (UINT8_C(4))
+#define __WASI_FILETYPE_SOCKET_DGRAM (UINT8_C(5))
+#define __WASI_FILETYPE_SOCKET_STREAM (UINT8_C(6))
+#define __WASI_FILETYPE_SYMBOLIC_LINK (UINT8_C(7))
+*/
+
+    if ((mode & 0170000) == 0100000) {
+	return 4; // type = regular file
+    }
+    else if ((mode & 0170000) == 0040000) {
+	return 3; // type = directory
+    }
+    else if ((mode & 0170000) == 0020000) {
+	return 2; // type = character device
+    }
+    else if ((mode & 0170000) == 0060000) {
+	return 1; // type = block device
+    }
+    
+    return 0; // unknwown
+}
+
+function file_type_from_dt(d_type) {
+
+    /*
+      #define DT_UNKNOWN  0   Unknown type 
+#define DT_FIFO     1   Named pipe (FIFO) 
+#define DT_CHR      2   Character device 
+#define DT_DIR      4   Directory 
+#define DT_BLK      6   Block device 
+#define DT_REG      8   Regular file 
+#define DT_LNK     10   Symbolic link 
+#define DT_SOCK    12   Socket 
+#define DT_WHT     14   (whiteout, BSD) 
+    */
+
+    if (d_type == 8) {
+	return 4; // type = regular file
+    }
+    else if (d_type == 4) {
+	return 3; // type = directory
+    }
+    else if (d_type == 2) {
+	return 2; // type = character device
+    }
+    else if (d_type == 6) {
+	return 1; // type = block device
     }
     
     return 0; // unknwown
@@ -1604,6 +1669,11 @@ function p1_fd_close(fd) {
 	print_trace("p1::fd_close fd="+fd);
     }
 
+    if (fd in p1_fd_readdir_entries) {
+
+	delete p1_fd_readdir_entries[fd];
+    }
+
     return ((Syscalls.close).bind(Syscalls))(fd);
 }
 
@@ -1642,7 +1712,7 @@ function p1_fd_readdir(fd, buf, len, cookie, retptr) {
 	
 	const size = (Syscalls.getdents).bind(Syscalls)(fd, arr, count);
 
-	//console.log("<-- getdents: size="+size);
+	console.log("<-- getdents: size="+size);
 
 	//console.log(arr);
 
@@ -1661,6 +1731,8 @@ function p1_fd_readdir(fd, buf, len, cookie, retptr) {
 	
 	let src_off = 0;
 	let dst_off = 0;
+
+	let index = 0;
 
 	while (src_off < size) {
 
@@ -1688,7 +1760,9 @@ function p1_fd_readdir(fd, buf, len, cookie, retptr) {
 
 	    offsets.push(dst_off);
 
-	    setI32(arr2, dst_off, dst_off+entry_size);
+	    index++;
+
+	    setI32(arr2, dst_off, index); // Cookie is index for wex
 	    setI32(arr2, dst_off+4, 0);
 
 	    setI32(arr2, dst_off+8, d_ino_l);
@@ -1696,18 +1770,18 @@ function p1_fd_readdir(fd, buf, len, cookie, retptr) {
 
 	    setI32(arr2, dst_off+16, path_len);
 
-	    setI32(arr2, dst_off+20, d_type);
+	    setI32(arr2, dst_off+20, file_type_from_dt(d_type));
 
 	    arr2.set(arr.subarray(src_off+15, src_off+15+path_len), dst_off+24);
 
-	    /*let s = "";
+	    let s = "";
 
 	    for (let i = 0; i < path_len; i++) {
 
 		s += String.fromCharCode(arr[src_off+15+i]);
 	    }
 
-	    console.log("readdir entry: "+s);*/
+	    console.log("readdir entry: "+s+" (len="+path_len+" type="+d_type+")");
 
 	    dst_off += entry_size;
 
@@ -1718,7 +1792,6 @@ function p1_fd_readdir(fd, buf, len, cookie, retptr) {
 
 	    buf: arr2,
 	    size: dst_off,
-	    off: 0,
 	    offsets: offsets
 	};
 
@@ -1727,37 +1800,31 @@ function p1_fd_readdir(fd, buf, len, cookie, retptr) {
 	//console.log(p1_fd_readdir_entries[fd].offsets);
     }
 
-    if (p1_fd_readdir_entries[fd].off >= p1_fd_readdir_entries[fd].size) {
+    let offset = 0;
+
+    const idx = Number(cookie);
+
+    if (idx > 0) {
+	offset = p1_fd_readdir_entries[fd].offsets[idx-1]; // cookie is BigInt and is the index for wex
+    }
+
+    if (offset >= p1_fd_readdir_entries[fd].size) {
 
 	setI32(HEAPU8, retptr, 0);
     }
     else {
 	
-	const l = (len < (p1_fd_readdir_entries[fd].size-p1_fd_readdir_entries[fd].off))?len:p1_fd_readdir_entries[fd].size-p1_fd_readdir_entries[fd].off;
+	const l = (len < (p1_fd_readdir_entries[fd].size-offset))?len:p1_fd_readdir_entries[fd].size-offset;
 	
-	HEAPU8.set(p1_fd_readdir_entries[fd].buf.subarray(p1_fd_readdir_entries[fd].off, p1_fd_readdir_entries[fd].off+l), buf);
+	HEAPU8.set(p1_fd_readdir_entries[fd].buf.subarray(offset, offset+l), buf);
 	setI32(HEAPU8, retptr, l);
-
-	p1_fd_readdir_entries[fd].off += l;
-
-	//console.log("1) off = "+p1_fd_readdir_entries[fd].off);
-
-	if ( (!(p1_fd_readdir_entries[fd].off in p1_fd_readdir_entries[fd].offsets)) && (p1_fd_readdir_entries[fd].off < p1_fd_readdir_entries[fd].size) ) {
-
-	    for (let i=0;i < p1_fd_readdir_entries[fd].offsets.length; ++i) {
-
-		if (p1_fd_readdir_entries[fd].offsets[i] > p1_fd_readdir_entries[fd].off) {
-
-		    p1_fd_readdir_entries[fd].off = p1_fd_readdir_entries[fd].offsets[i-1];
-
-		    //console.log("2) off = "+p1_fd_readdir_entries[fd].off);
-		    break;
-		}
-	    }
-	}
     }
 
-    //console.log("buf off="+p1_fd_readdir_entries[fd].off+", read="+getI32(HEAPU8, retptr));
+    console.log("buf off="+offset+", read="+getI32(HEAPU8, retptr));
+
+    if (trace) {
+	print_trace("<- size="+getI32(HEAPU8, retptr), false);
+    }
     
     return 0;
 }
@@ -1829,11 +1896,19 @@ function p1_fd_read(fd, iovs, iovs_len, retptr) {
 
 	setI32(HEAPU8, retptr, bytes_read);
 
+	if (trace) {
+	    print_trace("<-- err=ERRNO_SUCCESS bytes_read="+bytes_read, false);
+	}
+
 	console.log("<-- p1_fd_read: bytes_read="+bytes_read);
 
 	return 0;
     }
     else {
+
+	if (trace) {
+	    print_trace("<-- err="+_errno, false);
+	}
 
 	return _errno;
 
@@ -1859,20 +1934,27 @@ function p1_fd_write(fd, iovs, len, retptr) {
 	let buf = getI32(HEAPU8, iovs);
 	let buf_len = getI32(HEAPU8, iovs+4);
 
-	((Syscalls.blocking_write_and_flush).bind(Syscalls))(fd, buf, buf_len, retptr);
-
-	err = getI32(HEAPU8, retptr);
+	err = ((Syscalls.blocking_write_and_flush).bind(Syscalls))(fd, buf, buf_len, retptr);
 
 	if (err) {
-	    break;
+
+	    if (trace) {
+		print_trace("<-- err="+err, false);
+	    }
+	    
+	    return err;
 	}
 
-	nb_bytes_written += buf_len;
+	nb_bytes_written += getI32(HEAPU8, retptr);
 
 	iovs += 8;
     }
 
     setI32(HEAPU8, retptr, nb_bytes_written);
+
+    if (trace) {
+	print_trace("<-- err="+err+" nb_bytes_written="+nb_bytes_written, false);
+    }
 
     return err;
 }
@@ -1997,7 +2079,10 @@ function p1_environ_sizes_get(count, size) {
     }
 
     setI32(HEAPU8, count, env_count);
-    setI32(HEAPU8, size, env_size);
+      setI32(HEAPU8, size, env_size);
+
+    /*setI32(HEAPU8, count, 0);
+    setI32(HEAPU8, size, 0);*/
 
     return 0; // __WASI_ERRNO_SUCCESS
 }
@@ -2175,7 +2260,7 @@ function p1_fd_fdstat_get(fd, retptr) {
 	setI64(HEAPU8, retptr+16, BigInt(0xffffffff)); // fs_rights_inheriting
 
 	if (trace) {
-	    print_trace("<- ret=ERRNO_SUCCESS", false);
+	    print_trace("<- ret=ERRNO_SUCCESS fs_filestype="+desc_type(mode), false);
 	}
 
 	return 0;
@@ -2220,7 +2305,7 @@ function p1_fd_fdstat_set_rights(fd) {
     //TODO
 }
 
-function p1_fd_filestat_get(fd) {
+function p1_fd_filestat_get(fd, retptr) {
 
     update_heap();
 
@@ -2233,7 +2318,70 @@ function p1_fd_filestat_get(fd) {
 	print_trace("p1::fd_filestat_get fd="+fd);
     }
 
-    //TODO
+    let arr = new Uint8Array(128);
+
+    const len = (Syscalls.fstat).bind(Syscalls)(fd, arr);
+
+    if (len >= 0) {
+
+	/*struct stat
+{
+	dev_t st_dev;
+	int __st_dev_padding;
+	long __st_ino_truncated;
+	mode_t st_mode;
+	nlink_t st_nlink;
+	uid_t st_uid;
+	gid_t st_gid;
+	dev_t st_rdev;
+	int __st_rdev_padding;
+	off_t st_size;
+	blksize_t st_blksize;
+	blkcnt_t st_blocks;
+	struct timespec st_atim;
+	struct timespec st_mtim;
+	struct timespec st_ctim;
+	ino_t st_ino;
+};*/
+
+	const dev = getI32(arr, 0);
+
+	setI64(retptr, 0, BigInt(dev));
+
+	const ino = getI32(arr, 0);
+
+	setI64(retptr, 8, BigInt(ino));
+
+	const mode = getI32(arr, 12);
+
+	console.log("mode="+mode+", file_type="+file_type(mode));
+
+	HEAPU8[retptr+16] = file_type(mode);
+
+	const nlink = getI32(arr, 16);
+
+	setI64(retptr, 24, BigInt(nlink));
+
+	const size = getI32(arr, 36);
+
+	setI64(retptr, 32, BigInt(size));
+
+	setI64(retptr, 40, BigInt(0)); // atime
+	setI64(retptr, 48, BigInt(0)); // mtime
+	setI64(retptr, 56, BigInt(0)); // ctime
+
+	if (trace) {
+	    print_trace("<- ret=ERRNO_SUCCESS dev="+dev+" filetype="+file_type(mode)+" nlink="+nlink+" size="+size, false);
+	}
+
+	return 0;
+    }
+
+    if (trace) {
+	print_trace("<- ret=ERRNO_BADF", false);
+    }
+
+    return 8; // __WASI_ERRNO_BADF
 }
 
 function p1_fd_filestat_set_size(fd) {
@@ -2332,7 +2480,7 @@ function p1_fd_sync(fd) {
     //TODO
 }
 
-function p1_fd_tell(fd) {
+function p1_fd_tell(fd, retptr) {
 
     update_heap();
 
@@ -2345,7 +2493,32 @@ function p1_fd_tell(fd) {
 	print_trace("p1::fd_tell fd="+fd);
     }
 
-    //TODO
+    let arr = new Uint8Array(8);
+
+    const err = (Syscalls.tell).bind(Syscalls)(fd, arr);
+
+    if (!err) {
+
+	console.log("offset = "+getI32(arr,0));
+
+	HEAPU8.set(arr, retptr);
+
+	if (trace) {
+	    print_trace("<- ret=ERRNO_SUCCESS offset="+getI32(HEAPU8, retptr), false);
+	}
+
+	return 0;
+    }
+    else {
+
+	setI64(HEAPU8, retptr, BigInt(-1));
+    }
+
+    if (trace) {
+	print_trace("<- ret="+err, false);
+    }
+
+    return err;
 }
 
 function p1_path_create_directory(dirfd, path, path_len) {
@@ -2382,28 +2555,68 @@ function p1_path_filestat_get(fd, flags, path, path_len, retptr) {
 	let str_path = td.decode(HEAPU8.subarray(path, path+path_len));
 	
 	print_trace("path="+str_path, false);
+
+	console.log("path="+str_path);
     }
 
     let arr = new Uint8Array(128);
 
     const len = (Syscalls.fstatat).bind(Syscalls)(fd, path, path_len, flags, arr);
     
-    console.log("<-- fstat: len="+len);
+    console.log("<-- fstatat: len="+len);
 
     console.log(arr);
 
     if (len >= 0) {
 
-	//const mode = getI32(arr, 12);
+	/*struct stat
+{
+	dev_t st_dev;
+	int __st_dev_padding;
+	long __st_ino_truncated;
+	mode_t st_mode;
+	nlink_t st_nlink;
+	uid_t st_uid;
+	gid_t st_gid;
+	dev_t st_rdev;
+	int __st_rdev_padding;
+	off_t st_size;
+	blksize_t st_blksize;
+	blkcnt_t st_blocks;
+	struct timespec st_atim;
+	struct timespec st_mtim;
+	struct timespec st_ctim;
+	ino_t st_ino;
+};*/
 
-	//console.log("mode="+mode+", desc_type="+desc_type(mode));
+	const dev = getI32(arr, 0);
 
-	//HEAPU8[retptr] = desc_type(mode);
+	setI64(retptr, 0, BigInt(dev));
 
-	HEAPU8.set(arr.subarray(0, len), retptr);
+	const ino = getI32(arr, 0);
+
+	setI64(retptr, 8, BigInt(ino));
+
+	const mode = getI32(arr, 12);
+
+	console.log("mode="+mode+", file_type="+file_type(mode));
+
+	HEAPU8[retptr+16] = file_type(mode);
+
+	const nlink = getI32(arr, 16);
+
+	setI64(retptr, 24, BigInt(nlink));
+
+	const size = getI32(arr, 36);
+
+	setI64(retptr, 32, BigInt(size));
+
+	setI64(retptr, 40, BigInt(0)); // atime
+	setI64(retptr, 48, BigInt(0)); // mtime
+	setI64(retptr, 56, BigInt(0)); // ctime
 
 	if (trace) {
-	    print_trace("<- ret=ERRNO_SUCCESS", false);
+	    print_trace("<- ret=ERRNO_SUCCESS dev="+dev+" filetype="+file_type(mode)+" nlink="+nlink+" size="+size, false);
 	}
 
 	return 0;
@@ -2450,22 +2663,26 @@ function p1_path_link() {
     //TODO
 }
 
-function p1_path_readlink() {
+function p1_path_readlink(fd, path, path_len, buf, buf_len, retptr) {
 
     update_heap();
 
-    console.log("--> p1_path_link: "+arguments.length);
+    console.log("--> p1_path_readlink: "+arguments.length);
     
     for (let i = 0; i < arguments.length; ++i)
 	console.log(arguments[i]);
 
-
     if (trace) {
-	print_trace("p1::path_readlink");
+	print_trace("p1::path_readlink fd="+fd+" path="+path+" path_len="+path_len+" buf="+buf+" buf_len="+buf_len+" retptr="+retptr);
+
+	let td = new TextDecoder("utf-8");
+	
+	print_trace("path="+td.decode(HEAPU8.subarray(path, path+path_len)), false);
     }
     
-    //TODO
-
+    //const err = (Syscalls.readlinkat).bind(Syscalls)(fd, path, path_len);
+    
+    return 28; // __WASI_ERRNO_INVAL
 }
 
 function p1_path_remove_directory() {

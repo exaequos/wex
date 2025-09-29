@@ -694,9 +694,14 @@ const Syscalls = {
 
 		const _errno = buf[8] | (buf[9] << 8) | (buf[10] << 16) |  (buf[11] << 24);
 
-		//const bytes_written = buf[16] | (buf[17] << 8) | (buf[18] << 16) |  (buf[19] << 24);
+		if (!_errno) {
 
-		return _errno;
+		    const bytes_written = buf[16] | (buf[17] << 8) | (buf[18] << 16) |  (buf[19] << 24);
+
+		    return bytes_written;
+		}
+
+		return -_errno;
 	    }
 
 	    return -1;
@@ -704,10 +709,16 @@ const Syscalls = {
 
 	const err = handleWriteResponse(this.sharedDataArray);
 
-	if (retptr)
-	    HEAPU8[retptr] = err;
+	if (err >= 0) {
 
-	return err;
+	    if (retptr) {
+		setI32(HEAPU8, retptr, err);
+	    }
+
+	    return 0;
+	}
+
+	return -err;
     },
 
     blocking_read(fd, count, retptr) {
@@ -912,7 +923,7 @@ const Syscalls = {
 		const _errno = buf[8] | (buf[9] << 8) | (buf[10] << 16) |  (buf[11] << 24);
 
 		if (_errno == 0) {
-
+		    
 		    let len = buf[16] | (buf[17] << 8) | (buf[18] << 16) |  (buf[19] << 24);
 
 		    retptr.set(buf.subarray(20, 20+len));
@@ -1023,9 +1034,9 @@ const Syscalls = {
 
 		if (_errno == 0) {
 
-		    let len = buf[16] | (buf[17] << 8) | (buf[18] << 16) |  (buf[19] << 24);
+		    let len = buf[20] | (buf[21] << 8) | (buf[22] << 16) |  (buf[23] << 24);
 
-		    retptr.set(buf.subarray(20, 20+len));
+		    retptr.set(buf.subarray(24, 24+len));
 
 		    return len;
 		}
@@ -1509,6 +1520,127 @@ const Syscalls = {
 	return len;
     },
 
+    tell(fd, off) {
+	
+	let do_tell = () => {
+
+	    let buf_size = 256;
+	    
+	    let buf2 = new Uint8Array(buf_size);
+	    
+	    buf2[0] = 39; // SEEK
+
+	    /*//padding
+	      buf[1] = 0;
+	      buf[2] = 0;
+	      buf[3] = 0;*/
+
+	    let pid = this.pid;
+
+	    // pid
+	    buf2[4] = pid & 0xff;
+	    buf2[5] = (pid >> 8) & 0xff;
+	    buf2[6] = (pid >> 16) & 0xff;
+	    buf2[7] = (pid >> 24) & 0xff;
+
+	    // errno
+	    buf2[8] = 0x0;
+	    buf2[9] = 0x0;
+	    buf2[10] = 0x0;
+	    buf2[11] = 0x0;
+
+	    let remote_fd = this.fd_table[fd].remote_fd;
+	       
+	    // remote_fd
+	    buf2[12] = remote_fd & 0xff;
+	    buf2[13] = (remote_fd >> 8) & 0xff;
+	    buf2[14] = (remote_fd >> 16) & 0xff;
+	    buf2[15] = (remote_fd >> 24) & 0xff;
+
+	    const off_lo = 0;
+
+	    // offset
+	    buf2[16] = off_lo & 0xff;
+	    buf2[17] = (off_lo >> 8) & 0xff;
+	    buf2[18] = (off_lo >> 16) & 0xff;
+	    buf2[19] = (off_lo >> 24) & 0xff;
+
+	    const whence = 1; // SEEK_CUR
+
+	    // whence
+	    buf2[20] = whence & 0xff;
+	    buf2[21] = (whence >> 8) & 0xff;
+	    buf2[22] = (whence >> 16) & 0xff;
+	    buf2[23] = (whence >> 24) & 0xff;
+
+	    let msg = {
+		
+		from: this.rcv_bc_channel_name,
+		buf: buf2,
+		len: buf_size
+	    };
+
+	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    
+	    driver_bc.postMessage(msg);
+	};
+	
+	if ( (fd in this.fd_table) && (this.fd_table[fd]) ) {
+
+	    do_tell();
+	}
+	else {
+
+	    if (this.is_open(fd) >= 0) {
+
+		do_tell();
+	    }
+	    else {
+
+		return -1;
+	    }
+	}
+
+	Atomics.wait(this.sharedEventArray, 0, 0);
+
+	console.log("Worker: rcv_bc msg: "+this.sharedEventArray[0]);
+
+	Atomics.store(this.sharedEventArray, 0, 0);
+
+	console.log(this.sharedDataArray);
+
+	function handleTellResponse(buf) {
+
+	    if (buf[0] == (39|0x80)) {
+
+		const _errno = buf[8] | (buf[9] << 8) | (buf[10] << 16) |  (buf[11] << 24);
+
+		if (!_errno) {
+		    
+		    off.set(buf.subarray(16, 16+4));
+
+		    off[4] = 0;
+		    off[5] = 0;
+		    off[6] = 0;
+		    off[7] = 0;
+		    
+		    return 0;
+		}
+
+		return _errno;
+	    }
+
+	    return -1;
+	}
+
+	const err = handleTellResponse(this.sharedDataArray);
+
+	if (err == 29)
+	    return 70; // __WASI_ERRNO_SPIPE;
+
+	return err;
+    },
+
     poll(fd_array) {
 
 	console.log("--> poll");
@@ -1826,6 +1958,38 @@ const Syscalls = {
 	    }
 	    
 	});
+    },
+
+    readlinkat(fd, path, path_len) {
+
+	
+
+
+	if ( (fd in this.fd_table) && (this.fd_table[fd]) ) {
+
+	    do_readlinkat();
+	}
+	else {
+
+	    if (this.is_open(fd) >= 0) {
+
+		do_readlinkat();
+	    }
+	    else {
+
+		return -1;
+	    }
+	}
+
+	Atomics.wait(this.sharedEventArray, 0, 0);
+
+	console.log("Worker: rcv_bc msg: "+this.sharedEventArray[0]);
+
+	Atomics.store(this.sharedEventArray, 0, 0);
+
+	console.log(this.sharedDataArray);
+
+	
     }
 }
 
