@@ -25,6 +25,8 @@ var pollables = {};
 var trace = false;
 var info = false;
 
+var directories = "";
+
 function update_heap() {
 
     if (old_buffer !== memory.buffer) {
@@ -86,23 +88,33 @@ function setI16(arr, off, val) {
 
 function do_preopens() {
 
-    let paths = ["."];
+    console.log("--> do_preopens: "+directories);
 
-    for (let path of paths) {
+    const dirs = directories.split("|");
 
+    console.log(dirs);
+
+    for (let dir of dirs) {
+
+	const paths = dir.split("::");
+
+	const host_dir = paths[0];
+
+	const guest_dir = (paths.length > 1)?paths[1]:paths[0];
+	
 	let posix_flags = 0;
-
+	    
 	posix_flags |= 00200000;  // O_DIRECTORY
 	posix_flags |= 00000002; // O_RDWR
-
-	let fd = (Syscalls.openat).bind(Syscalls)(-100, path, path.length, posix_flags, 0);
-
-	console.log("do_preopens: openat "+path+" --> fd="+fd);
-
+	    
+	let fd = (Syscalls.openat).bind(Syscalls)(-100, host_dir, host_dir.length, posix_flags, 0);
+	    
+	console.log("do_preopens: openat "+host_dir+" --> fd="+fd+" guest="+guest_dir);
+	
 	if (fd >= 0) {
 	    
-	    preOpens[fd] = { path: path, type: 0 };
-	}   
+	    preOpens[fd] = { path: guest_dir, type: 0 };
+	}
     }
 }
 
@@ -1624,9 +1636,19 @@ function p1_path_unlink_file(dirfd, path, path_len) {
 
     if (trace) {
 	print_trace("p1::path_unlink_file dirfd="+dirfd+" path="+path+" path_len="+path_len);
+
+	let td = new TextDecoder("utf-8");
+	
+	print_trace("path="+td.decode(HEAPU8.subarray(path, path+path_len)), false);
     }
 
-    return (Syscalls.unlinkat).bind(Syscalls)(dirfd, path, path_len);
+    const err = (Syscalls.unlinkat).bind(Syscalls)(dirfd, path, path_len);
+
+    if (trace) {
+	print_trace("<- err="+err, false);
+    }
+
+    return err;
 }
 
 function p1_fd_advise(fd) {
@@ -3032,6 +3054,8 @@ self.onmessage = function(event) {
 
     trace = event.data.trace;
     info = event.data.info;
+
+    directories = event.data.directories;
 
     if (trace) {
 

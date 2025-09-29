@@ -73,9 +73,10 @@
   WebAssembly WASI runtime (0.1 & 0.2)
 
 options:
-  -h, --help                                   Print this help message
-  -v, --version                                Print version information
-  -t, --trace                                  Print syscalls\n`;
+  -d, --dir <HOST_DIR[::GUEST_DIR]>            Grant access of a host directory to a guest.
+  -h, --help                                   Print this help message.
+  -v, --version                                Print version information.
+  -t, --trace                                  Print syscalls.\n`;
 
 	write_error(help, () => { exa.exit(0); });
 
@@ -93,6 +94,8 @@ options:
 	let input = "";
 	let trace = false;
 	let info = false;
+	let dir_expected = false;
+	let directories = "";
 
 	let i = 0;
 
@@ -100,7 +103,30 @@ options:
 
 	    i++;
 
-	    if ( (arg === "--help") || (arg === "-h") ) {
+	    if (dir_expected) {
+
+		if (arg.indexOf("-") == 0) {
+
+		    write_error("Directory expected\n", () => { print_help() });
+		    return [ null ];
+		}
+		else {
+		    
+		    if (directories.length > 0) {
+
+			directories += "|";
+		    }
+
+		    directories += arg;
+		    
+		    dir_expected = false;
+		}
+	    }
+	    else if ( (arg === "--dir") || (arg === "-d") ) {
+
+		dir_expected = true;
+	    }
+	    else if ( (arg === "--help") || (arg === "-h") ) {
 
 		print_help();
 		return [ null ];
@@ -136,10 +162,10 @@ options:
 	    return [ null ];
 	}
 
-	return [input, i, trace, info];
+	return [input, i, trace, info, directories];
     }
 
-    function start_worker(wasm, input_pos, trace, info) {
+    function start_worker(wasm, input_pos, trace, info, directories) {
 
 	const sharedEventBuffer = new SharedArrayBuffer(4);
 	const sharedEventArray = new Int32Array(sharedEventBuffer);
@@ -299,7 +325,7 @@ options:
 
 	args += " "; // finish by space
 
-	worker.postMessage({pid: pid, eventBuf: sharedEventBuffer, dataBuf: sharedDataBuffer, file: wasm, args: args, env_count: exa.env_count, env_size: exa.env_size, env: exa.env, trace: trace, info: info});
+	worker.postMessage({pid: pid, eventBuf: sharedEventBuffer, dataBuf: sharedDataBuffer, file: wasm, args: args, env_count: exa.env_count, env_size: exa.env_size, env: exa.env, trace: trace, info: info, directories: directories});
 	
     }
     
@@ -309,7 +335,7 @@ options:
 
 	console.log(exa.args);
 
-	const [path, pos, trace, info] = parse_args(exa.args);
+	const [path, pos, trace, info, directories] = parse_args(exa.args);
 
 	if (path) {
 
@@ -323,7 +349,7 @@ options:
 
 		    exa.close(fd).then(function() {
 
-			start_worker(buffer, pos, trace, info);
+			start_worker(buffer, pos, trace, info, directories);
 			
 		    }, function() {
 
