@@ -16,6 +16,8 @@ var directoryStreams = {};
 
 var p1_fd_readdir_entries = {};
 
+var p1_open_fd_rights = {};
+
 var timer_fd = 0x70000000;
 
 var poll_id = 0;
@@ -26,6 +28,12 @@ var trace = false;
 var info = false;
 
 var directories = "";
+
+const read_dir_rights = BigInt((1 << 13) | (1 << 14) | (1 << 15) | (1 << 18) | (1 << 21)); /* PATH_OPEN | FD_READDIR | PATH_READLINK | PATH_FILESTAT_GET | FD_FILESTAT_GET  */
+const write_dir_rights = BigInt((1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 16) | (1 << 17) | (1 << 20) | (1 << 19) | (1 << 23) | (1 << 22) | (1 << 24) | (1 << 25) | (1 << 26)); /* PATH_CREATE_DIRECTORY | PATH_CREATE_FILE | PATH_LINK_SOURCE | PATH_LINK_TARGET | PATH_RENAME_SOURCE | PATH_RENAME_TARGET |  | PATH_FILESTAT_SET_TIMES |  FD_FILESTAT_SET_TIMES | FD_FILESTAT_SET_SIZE | PATH_SYMLINK | PATH_REMOVE_DIRECTORY | PATH_UNLINK_FILE */
+const read_file_rights = BigInt((1 << 1) | (1 << 2) | (1 << 5) | (1 << 18) | (1 << 21) | (1 << 27)); /* FD_READ | FD_SEEK | FD_TELL | PATH_FILESTAT_GET | FD_FILESTAT_GET | POLL_FD_READWRITE*/
+const write_file_rights = BigInt((1 << 0) | (1 << 2) | (1 << 5) | (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 11) | (1 << 12) | (1 << 20) | (1 << 19) | (1 << 22) | (1 << 23) | (1 << 27)); /* FD_DATASYNC | FD_SEEK | FD_TELL | FD_FDSTAT_SET_FLAGS | FD_SYNC | FD_WRITE | FD_ADVISE | FD_ALLOCATE  | PATH_LINK_SOURCE | PATH_LINK_TARGET | PATH_FILESTAT_SET_TIMES | PATH_FILESTAT_SET_SIZE | FD_FILESTAT_SET_SIZE | FD_FILESTAT_SET_TIMES | POLL_FD_READWRITE */
+
 
 function update_heap() {
 
@@ -114,8 +122,44 @@ function do_preopens() {
 	if (fd >= 0) {
 	    
 	    preOpens[fd] = { path: guest_dir, type: 0 };
+
+	    let arr = new Uint8Array(128);
+
+	    const len = (Syscalls.fstat).bind(Syscalls)(fd, arr);
+
+	    if (len >= 0) {
+
+		const mode = getI32(arr, 12);
+
+		console.log("do_preopens: mode="+mode);
+
+		let fs_rights_base = BigInt(0);
+		let fs_rights_inheriting = BigInt(0);
+
+		if (mode & 0400) { // S_IRUSR
+
+		    console.log("do_preopens: read access");
+
+		    fs_rights_base |= read_dir_rights;
+		    fs_rights_inheriting |= read_dir_rights|read_file_rights;
+		}
+		
+		if (mode & 0200) { // S_IWUSR
+		    
+		    console.log("do_preopens: write access");
+
+		    fs_rights_base |= write_dir_rights;
+		    fs_rights_inheriting |= write_dir_rights|write_file_rights;
+		}
+
+		p1_open_fd_rights[fd] = { fs_rights_base: fs_rights_base, fs_rights_inheriting: fs_rights_inheriting };
+	    }
 	}
     }
+
+    p1_open_fd_rights[0] = { fs_rights_base: BigInt(1 << 1), fs_rights_inheriting: BigInt(0) };
+    p1_open_fd_rights[1] = { fs_rights_base: BigInt(1 << 6), fs_rights_inheriting: BigInt(0) };
+    p1_open_fd_rights[2] = { fs_rights_base: BigInt(1 << 6), fs_rights_inheriting: BigInt(0) };
 }
 
 function create_pollable(fd, inout) {
@@ -1557,6 +1601,10 @@ function p1_path_open(dirfd, path_flags, path, path_len, open_flags, fs_rights_b
 	print_trace("path="+td.decode(HEAPU8.subarray(path, path+path_len)), false);
     }
 
+    let td = new TextDecoder("utf-8");
+	
+    console.log("path="+td.decode(HEAPU8.subarray(path, path+path_len)));
+
     let posix_flags = 0;
 
     if (path_flags & 0x01) { // FILESYSTEM_PATH_FLAGS_SYMLINK_FOLLOW
@@ -1597,14 +1645,41 @@ function p1_path_open(dirfd, path_flags, path, path_len, open_flags, fs_rights_b
     else if ((flags & 3) == 3)
     posix_flags |= 00000002;  // O_RDWR*/
 
-    if (fdflags & 1) { // APPEND 
+    const child_fs_rights_base = p1_open_fd_rights[dirfd].fs_rights_inheriting & fs_rights_base;
+    const child_fs_rights_inheriting = p1_open_fd_rights[dirfd].fs_rights_inheriting & fs_rights_inheriting;
+
+    const read_access = child_fs_rights_base & BigInt(1 << 1);
+    const write_access = child_fs_rights_base & BigInt(1 << 6);
+
+    if (read_access && write_access) {
+
+	posix_flags |= 00000002;  // O_RDWR
+    }
+    else if (read_access) {
+
+	posix_flags |= 00000000;  // O_RDONLY
+    }
+    else if (write_access) {
+
 	posix_flags |= 00000001;  // O_WRONLY
+    }
+    
+    if (fdflags & 1) { // APPEND 
+
+	posix_flags |= 00002000;
     }
 
     console.log("posix_flags="+posix_flags);
+    
+    let mode = 0;
 
-    const mode = 0;
+    if (open_flags & 1) {
 
+	mode = 00700; // S_IRWXU
+    }
+
+    console.log("mode="+mode);
+    
     let fd = (Syscalls.openat).bind(Syscalls)(dirfd, path, path_len, posix_flags, mode);
 
     if (fd < 0) {
@@ -1617,10 +1692,14 @@ function p1_path_open(dirfd, path_flags, path, path_len, open_flags, fs_rights_b
     }
     
     setI32(HEAPU8, retptr, fd);
-
+    
     if (trace) {
 	print_trace("<- fd="+fd, false);
     }
+
+    console.log("<- fd="+fd);
+    
+    p1_open_fd_rights[fd] = { fs_rights_base: child_fs_rights_base, fs_rights_inheriting: child_fs_rights_inheriting };
 
     return 0;
 }
@@ -1694,6 +1773,11 @@ function p1_fd_close(fd) {
     if (fd in p1_fd_readdir_entries) {
 
 	delete p1_fd_readdir_entries[fd];
+    }
+
+    if (fd in p1_open_fd_rights) {
+
+	delete p1_open_fd_rights[fd];
     }
 
     return ((Syscalls.close).bind(Syscalls))(fd);
@@ -2272,17 +2356,15 @@ function p1_fd_fdstat_get(fd, retptr) {
 
 	const mode = getI32(arr, 12);
 
-	console.log("mode="+mode+", desc_type="+desc_type(mode));
-
-	HEAPU8[retptr] = desc_type(mode);
+	HEAPU8[retptr] = file_type(mode);
 
 	setI16(HEAPU8, retptr+2, 0); // fs_flags
 
-	setI64(HEAPU8, retptr+8, BigInt(0xffffffff)); // fs_rights_base
-	setI64(HEAPU8, retptr+16, BigInt(0xffffffff)); // fs_rights_inheriting
+	setI64(HEAPU8, retptr+8, p1_open_fd_rights[fd].fs_rights_base);
+	setI64(HEAPU8, retptr+16, p1_open_fd_rights[fd].fs_rights_inheriting);
 
 	if (trace) {
-	    print_trace("<- ret=ERRNO_SUCCESS fs_filestype="+desc_type(mode), false);
+	    print_trace("<- ret=ERRNO_SUCCESS fs_filestype="+file_type(mode)+" fs_right_base="+p1_open_fd_rights[fd].fs_rights_base+" fs_rights_inheriting="+p1_open_fd_rights[fd].fs_rights_inheriting, false);
 	}
 
 	return 0;
@@ -2391,10 +2473,12 @@ function p1_fd_filestat_get(fd, retptr) {
 	setI64(retptr, 40, BigInt(0)); // atime
 	setI64(retptr, 48, BigInt(0)); // mtime
 	setI64(retptr, 56, BigInt(0)); // ctime
-
+	
 	if (trace) {
 	    print_trace("<- ret=ERRNO_SUCCESS dev="+dev+" filetype="+file_type(mode)+" nlink="+nlink+" size="+size, false);
 	}
+
+	console.log("<- ret=ERRNO_SUCCESS dev="+dev+" filetype="+file_type(mode)+" nlink="+nlink+" size="+size);
 
 	return 0;
     }
@@ -2402,6 +2486,8 @@ function p1_fd_filestat_get(fd, retptr) {
     if (trace) {
 	print_trace("<- ret=ERRNO_BADF", false);
     }
+
+    console.log("<- ret=ERRNO_BADF");
 
     return 8; // __WASI_ERRNO_BADF
 }
@@ -2528,6 +2614,8 @@ function p1_fd_tell(fd, retptr) {
 	if (trace) {
 	    print_trace("<- ret=ERRNO_SUCCESS offset="+getI32(HEAPU8, retptr), false);
 	}
+
+	console.log("<- ret=ERRNO_SUCCESS offset="+getI32(HEAPU8, retptr));
 
 	return 0;
     }

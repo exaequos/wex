@@ -723,7 +723,7 @@ const Syscalls = {
 
     blocking_read(fd, count, retptr) {
 
-	console.log("--> Syscalls.blocking_read");
+	console.log("--> Syscalls.blocking_read: count="+count);
 
 	const len = Number(count);
 
