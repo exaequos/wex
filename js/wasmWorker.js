@@ -1,14 +1,23 @@
 importScripts("./wasi_syscalls.js");
+importScripts("./wasix.js");
+
+//console.log = function() {};
 
 var memory;
 var old_buffer;
 var HEAPU8;
 
+var sharedEventArray;
+var sharedDataArray;
+
 var args, env_count, env_size, env;
 
 var read_ptr = 0; // for Fixing blocking read ptr (wasi 0.2) : it is set by fd_read (wasi 0.1)
 
-let instances = new Array();
+var instances = new Array();
+var dependencies = new Array();
+
+var dynlibs = {};
 
 var preOpens = {};
 
@@ -19,6 +28,9 @@ var p1_fd_readdir_entries = {};
 var p1_open_fd_rights = {};
 
 var timer_fd = 0x70000000;
+var svg_fd = 0x7c000000;
+var dom_fd = 0x7d000000;
+var linker_fd = 0x7e000000;
 
 var poll_id = 0;
 
@@ -34,6 +46,14 @@ const write_dir_rights = BigInt((1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (
 const read_file_rights = BigInt((1 << 1) | (1 << 2) | (1 << 5) | (1 << 18) | (1 << 21) | (1 << 27)); /* FD_READ | FD_SEEK | FD_TELL | PATH_FILESTAT_GET | FD_FILESTAT_GET | POLL_FD_READWRITE*/
 const write_file_rights = BigInt((1 << 0) | (1 << 2) | (1 << 5) | (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 11) | (1 << 12) | (1 << 20) | (1 << 19) | (1 << 22) | (1 << 23) | (1 << 27)); /* FD_DATASYNC | FD_SEEK | FD_TELL | FD_FDSTAT_SET_FLAGS | FD_SYNC | FD_WRITE | FD_ADVISE | FD_ALLOCATE  | PATH_LINK_SOURCE | PATH_LINK_TARGET | PATH_FILESTAT_SET_TIMES | PATH_FILESTAT_SET_SIZE | FD_FILESTAT_SET_SIZE | FD_FILESTAT_SET_TIMES | POLL_FD_READWRITE */
 
+// ── Event ring buffer (SPSC: main thread writes, worker reads) ────────────────
+const RING_DATA = 4096;
+const ringBuf  = new SharedArrayBuffer(8 + RING_DATA);
+const ringHdr  = new Int32Array(ringBuf, 0, 2);  // [0]=write-idx, [1]=read-idx
+const ringData = new Uint8Array(ringBuf, 8);
+
+var last_linker_op = 0;
+var last_linker_result = 0;
 
 function update_heap() {
 
@@ -51,6 +71,23 @@ function print_trace(str, newline = true) {
     const buf = new TextEncoder().encode((newline?"\n":"")+"[TRACE] " + str+"\n");
 
     ((Syscalls.blocking_write_and_flush).bind(Syscalls))(2, buf, buf.length, 0);
+}
+
+function get_string(path, len) {
+
+    let td = new TextDecoder("utf-8");
+
+    if (memory.buffer instanceof SharedArrayBuffer) {
+
+	const view = new Uint8Array(memory.buffer, path, len);
+	const copy = view.slice();
+	
+	return td.decode(copy);
+    }
+    else {
+	
+	return td.decode(HEAPU8.subarray(path, path+len));
+    }
 }
 
 function getI32(arr, off) {
@@ -249,8 +286,9 @@ function get_directories(ptr) {
 
     console.log("--> get_directories: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     const buf = (getFunc("cabi_realloc"))(0, 0, 0, 4);
     const list = (getFunc("cabi_realloc"))(0, 0, 0, 8*1);
@@ -275,8 +313,9 @@ function read_directory(fd, retptr) {
 
     console.log("--> read_directory: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     const count = 8192;
 
@@ -315,8 +354,9 @@ function read_directory_entry(fd, retptr) {
     
     console.log("--> read_directory_entry: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (fd in directoryStreams) {
 	
@@ -376,8 +416,9 @@ function descriptor_get_flags() {
 
     console.log("--> descriptor_get_flags: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function desc_type(mode) {
@@ -481,8 +522,9 @@ function get_type(fd, retptr) {
 
     console.log("--> get_type: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (fd == -100) {
 
@@ -520,8 +562,9 @@ function stat(fd, retptr) {
 
     console.log("--> stat: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     let arr = new Uint8Array(128);
 
@@ -672,9 +715,9 @@ function drop_output_stream() {
 
     console.log("--> drop_output_stream: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
-
+    }
     
     
     return 0;
@@ -684,8 +727,9 @@ function get_environment() {
 
     console.log("--> get_environment: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     setI32(HEAPU8, arguments[0], 0);
 
@@ -696,8 +740,9 @@ function filesystem_error_code() {
 
     console.log("--> filesystem_error_code: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
     
     setI32(HEAPU8, arguments[1], 0);
 
@@ -708,8 +753,9 @@ function error() {
 
     console.log("--> error: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
     
     return 0;
 }
@@ -718,8 +764,9 @@ function error_to_debug_string() {
 
     console.log("--> error_to_debug_string: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
     
     return 0;
 }
@@ -757,8 +804,9 @@ function subscribe_duration(dur) {
 
     console.log("--> subscribe_duration: dur="+dur);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     timer_fd++;
     
@@ -780,8 +828,9 @@ function subscribe_instant() {
 
     console.log("--> subscribe_instant: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function poll(polls, len, ptr) {
@@ -831,8 +880,9 @@ function pollable_block(pollable) {
 
     console.log("--> pollable_block: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     const fd = (Syscalls.poll).bind(Syscalls)([{fd: pollables[pollable].fd, inout: pollables[pollable].inout}]);
 
@@ -843,8 +893,9 @@ function pollable_ready(pollable) {
 
     console.log("--> pollable_ready: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     let ready = 0;
 
@@ -864,8 +915,9 @@ function metadata_hash(fd, retptr) {
 
     console.log("--> metadata_hash: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     let arr = new Uint8Array(128);
 
@@ -888,8 +940,9 @@ function metadata_hash_at(fd, path_flags, ptr, len, retptr) {
 
     console.log("--> metadata_hash_at: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     HEAPU8[retptr] = 0; // 0 = OK
     
@@ -939,32 +992,36 @@ function tcp_socket_subscribe() {
 
     console.log("--> tcp_socket_subscribe: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function udp_socket_subscribe() {
 
     console.log("--> udp_socket_subscribe: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function instance_network() {
 
     console.log("--> instance_network: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function start_connect(fd, network, variant, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, variant9, variant10, variant11, retptr) {
 
     console.log("--> start_connect: fd="+fd+", network="+network+", variant="+variant+", retptr="+retptr);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     let addr;
 
@@ -1003,8 +1060,9 @@ function finish_connect(fd, retptr) {
 
     console.log("--> finish_connect: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     HEAPU8[retptr] = 0;
     setI32(HEAPU8, retptr+4, fd);
@@ -1015,8 +1073,9 @@ function start_bind(fd, network, variant, variant1, variant2, variant3, variant4
 
     console.log("--> start_bind: fd="+fd+", network="+network+", variant="+variant+", retptr="+retptr);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     let addr;
 
@@ -1065,8 +1124,9 @@ function finish_bind(fd, retptr) {
 
     console.log("--> finish_bind: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     HEAPU8[retptr] = 0;
     HEAPU8[retptr+1] = 0;
@@ -1076,8 +1136,9 @@ function input_stream_subscribe(fd) {
 
     console.log("--> input_stream_subscribe: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     return create_pollable(fd, 0);
 }
@@ -1086,16 +1147,18 @@ function input_stream_read() {
 
     console.log("--> input_stream_read: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function output_stream_subscribe(fd) {
 
     console.log("--> output_stream_subscribe: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     return create_pollable(fd, 1);
 }
@@ -1115,8 +1178,9 @@ function output_stream_blocking_splice(fd_out, fd_in, length, retptr) {
 
     console.log("--> output_stream_blocking_splice: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     const buf = (Syscalls.blocking_read).bind(Syscalls)(fd_in, Number(length), 0);
 
@@ -1156,32 +1220,36 @@ function create_directory_at() {
 
     console.log("--> create_directory_at: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function remove_directory_at() {
 
     console.log("--> remove_directory_at: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function unlink_file_at() {
 
     console.log("--> unlink_file_at: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function drop_tcp_socket() {
 
     console.log("--> drop_tcp_socket: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function udp_socket_stream(fd, option, option14, option15, option16, option17, option18, option19, option20, option21, option22, option23, option24, option25, retptr) {
@@ -1267,8 +1335,9 @@ function config_get(str, len, retptr) {
 
     console.log("--> config_get: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     let key = "";
 
@@ -1287,8 +1356,9 @@ function config_get_all() {
 
     console.log("--> config_get_all: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     //TODO
 
@@ -1364,40 +1434,45 @@ function get_terminal_stdin() {
 
     console.log("--> get_terminal_stdin: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function get_terminal_stdout() {
 
     console.log("--> get_terminal_stdout: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function get_terminal_stderr() {
 
     console.log("--> get_terminal_stderr: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function resource_drop_terminal_input() {
 
     console.log("--> resource_drop_terminal_input: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 function resource_drop_terminal_output() {
 
     console.log("--> resource_drop_terminal_output: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 }
 
 
@@ -1409,8 +1484,9 @@ function p1_proc_exit(status) {
 
     
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::proc_exit status="+status);
@@ -1423,8 +1499,9 @@ function p1_proc_raise() {
 
     console.log("--> p1_proc_raise: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::proc_raise");
@@ -1437,8 +1514,9 @@ function p1_sched_yield() {
 
     console.log("--> p1_sched_yield: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::sched_yield");
@@ -1451,8 +1529,9 @@ function p1_sock_accept() {
 
     console.log("--> p1_sock_accept: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::sock_accept");
@@ -1465,8 +1544,9 @@ function p1_sock_recv() {
 
     console.log("--> p1_sock_recv: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::sock_recv");
@@ -1479,8 +1559,9 @@ function p1_sock_send() {
 
     console.log("--> p1_sock_send: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::sock_send");
@@ -1493,8 +1574,9 @@ function p1_sock_shutdown() {
 
     console.log("--> p1_sock_shutdown: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::sock_shutdown");
@@ -1509,8 +1591,9 @@ function p1_random_get(buf, size) {
 
     console.log("--> p1_random_get: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::random_get buf="+buf+" size="+size);
@@ -1539,6 +1622,8 @@ function p1_fd_prestat_get(fd, retptr) {
 	if (trace) {
 	    print_trace("<- ret=ERRNO_BADF", false);
 	}
+
+	console.log("<- ret=ERRNO_BADF", false);
 	
 	return 8; // __WASI_ERRNO_BADF
     }
@@ -1550,6 +1635,8 @@ function p1_fd_prestat_get(fd, retptr) {
     if (trace) {
 	print_trace("<- ret=ERRNO_SUCCESS type="+preOpens[fd].type+" len="+preOpens[fd].path.length, false);
     }
+
+    console.log("<- ret=ERRNO_SUCCESS type="+preOpens[fd].type+" len="+preOpens[fd].path.length);
     
     return 0; // __WASI_ERRNO_SUCCESS
 }
@@ -1590,20 +1677,21 @@ function p1_path_open(dirfd, path_flags, path, path_len, open_flags, fs_rights_b
 
     console.log("--> p1_path_open: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
+
+    let str_path = get_string(path, path_len);
 
     if (trace) {
 	print_trace("p1::path_open dirfd="+dirfd+" path_flags="+path_flags+" path="+path+" path_len="+path_len+" open_flags="+open_flags+" fs_rights_base="+fs_rights_base+" fs_rights_inheriting="+fs_rights_inheriting+" fdflags="+fdflags+" retptr="+retptr);
 
 	let td = new TextDecoder("utf-8");
 	
-	print_trace("path="+td.decode(HEAPU8.subarray(path, path+path_len)), false);
+	print_trace("path="+str_path, false);
     }
 
-    let td = new TextDecoder("utf-8");
-	
-    console.log("path="+td.decode(HEAPU8.subarray(path, path+path_len)));
+    console.log("path="+str_path);
 
     let posix_flags = 0;
 
@@ -1679,6 +1767,73 @@ function p1_path_open(dirfd, path_flags, path, path_len, open_flags, fs_rights_b
     }
 
     console.log("mode="+mode);
+
+    // Intercept for SVG, DOM, linker
+    
+    if ( (dirfd in preOpens) && (preOpens[dirfd].path == "/dev") ) {
+
+	if (str_path === "svg") {
+	    
+	    console.log("Open SVG display");
+
+	    const msg = {
+
+		op: 'open_svg',
+		mem: memory
+	    };
+	    
+	    self.postMessage(msg);
+
+	    Atomics.wait(sharedEventArray, 0, 0);
+	    
+	    Atomics.store(sharedEventArray, 0, 0);
+
+	    let fd = svg_fd;
+
+	    setI32(HEAPU8, retptr, fd);
+
+	    p1_open_fd_rights[fd] = { fs_rights_base: child_fs_rights_base, fs_rights_inheriting: child_fs_rights_inheriting };
+	
+	    return 0;
+	}
+	else if (str_path === "dom") {
+	    
+	    console.log("Open DOM display");
+
+	    const msg = {
+
+		op: 'open_dom',
+		mem: memory,
+		sab: ringBuf
+	    };
+	    
+	    self.postMessage(msg);
+
+	    Atomics.wait(sharedEventArray, 0, 0);
+	    
+	    Atomics.store(sharedEventArray, 0, 0);
+
+	    let fd = dom_fd;
+
+	    setI32(HEAPU8, retptr, fd);
+
+	    p1_open_fd_rights[fd] = { fs_rights_base: child_fs_rights_base, fs_rights_inheriting: child_fs_rights_inheriting };
+	
+	    return 0;
+	}
+	else if (str_path === "linker") {
+
+	    console.log("Open linker");
+
+	    let fd = linker_fd;
+
+	    setI32(HEAPU8, retptr, fd);
+
+	    p1_open_fd_rights[fd] = { fs_rights_base: child_fs_rights_base, fs_rights_inheriting: child_fs_rights_inheriting };
+	
+	    return 0;
+	}
+    }
     
     let fd = (Syscalls.openat).bind(Syscalls)(dirfd, path, path_len, posix_flags, mode);
 
@@ -1710,8 +1865,9 @@ function p1_path_unlink_file(dirfd, path, path_len) {
 
     console.log("--> p1_path_unlink_file: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::path_unlink_file dirfd="+dirfd+" path="+path+" path_len="+path_len);
@@ -1734,8 +1890,9 @@ function p1_fd_advise(fd) {
 
     console.log("--> p1_fd_advise: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_advise fd="+fd);
@@ -1748,8 +1905,9 @@ function p1_fd_allocate(fd) {
 
     console.log("--> p1_fd_allocate: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_allocate fd="+fd);
@@ -1763,8 +1921,9 @@ function p1_fd_close(fd) {
 
     console.log("--> p1_fd_close: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_close fd="+fd);
@@ -1787,8 +1946,9 @@ function p1_fd_datasync(fd) {
 
     console.log("--> p1_fd_datasync: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_datasync fd="+fd);
@@ -1803,8 +1963,9 @@ function p1_fd_readdir(fd, buf, len, cookie, retptr) {
 
     console.log("--> p1_fd_readdir: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_readdir fd="+fd+" buf="+buf+" len="+len+" cookie="+cookie+" retptr="+retptr);
@@ -1945,14 +2106,47 @@ function p1_fd_read(fd, iovs, iovs_len, retptr) {
 	print_trace("p1::fd_read fd="+fd+" iovs="+iovs+" iovs_len="+iovs_len+" retptr="+retptr);
     }
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     let length = 0;
 
     for (let i = 0; i < iovs_len; i++) {
 
-	length += getI32(HEAPU8, iovs+4);
+	length += getI32(HEAPU8, iovs+4+8*i);
+    }
+
+    if (fd == dom_fd) { // DOM
+
+	while (Atomics.load(ringHdr, 0) === Atomics.load(ringHdr, 1)) {
+	    Atomics.wait(ringHdr, 0, Atomics.load(ringHdr, 0));
+	}
+
+	let bytes_read = 0;
+
+	for (let i = 0; i < iovs_len; i++) {
+
+	    const ptr = getI32(HEAPU8, iovs+8*i);
+	    const buf_len = getI32(HEAPU8, iovs+4+8*i);
+
+	    bytes_read += readFromRing(ptr, buf_len);
+	}
+	
+	setI32(HEAPU8, retptr, bytes_read);
+
+	return 0;
+    }
+    else if (fd == linker_fd) { // linker
+
+	const ptr = getI32(HEAPU8, iovs);
+	const buf_len = getI32(HEAPU8, iovs+4);
+
+	setI32(HEAPU8, ptr, last_linker_result);
+	
+	last_linker_op = 0;
+
+	return 0;
     }
 
     const buf = (Syscalls.blocking_read).bind(Syscalls)(fd, length, 0);
@@ -2035,6 +2229,126 @@ function p1_fd_write(fd, iovs, len, retptr) {
 
     let err = 0;
 
+    if (fd == svg_fd) { // SVG
+
+	const mem = new DataView(memory.buffer);
+
+	let totalWritten = 0;
+
+	let arr = new Array();
+
+	for (let i = 0; i < len; i++) {
+	    
+	    const iovBase = mem.getUint32(iovs + i * 8,     true);
+	    const iovLen  = mem.getUint32(iovs + i * 8 + 4, true);
+	    
+	    totalWritten += iovLen;
+
+	    arr.push([iovBase, iovLen]);
+	}
+
+	const msg = {
+
+	    op: 'show_svg',
+	    arr: arr
+	};
+	
+	self.postMessage(msg);
+
+	Atomics.wait(sharedEventArray, 0, 0);
+	    
+	Atomics.store(sharedEventArray, 0, 0);
+
+	setI32(HEAPU8, retptr, totalWritten);
+
+	return 0;
+    }
+    else if (fd == dom_fd) { // DOM
+
+	console.log("wasmWorker: write to DOM");
+
+	const mem = new DataView(memory.buffer);
+
+	let totalWritten = 0;
+
+	let arr = new Array();
+
+	for (let i = 0; i < len; i++) {
+	    
+	    const iovBase = mem.getUint32(iovs + i * 8,     true);
+	    const iovLen  = mem.getUint32(iovs + i * 8 + 4, true);
+	    
+	    totalWritten += iovLen;
+
+	    arr.push([iovBase, iovLen]);
+	}
+
+	const msg = {
+
+	    op: 'show_dom',
+	    arr: arr
+	};
+	
+	self.postMessage(msg);
+
+	Atomics.wait(sharedEventArray, 0, 0);
+	    
+	Atomics.store(sharedEventArray, 0, 0);
+
+	setI32(HEAPU8, retptr, totalWritten);
+
+	return 0;
+    }
+    else if (fd == linker_fd) { // linker
+
+	const mem = new DataView(memory.buffer);
+
+	const iovBase = mem.getUint32(iovs, true);
+	const iovLen  = mem.getUint32(iovs, true);
+
+	const op = mem.getUint32(iovBase, true);
+	const arg = mem.getUint32(iovBase+4, true);
+	const op_length = mem.getUint32(iovBase+8, true);
+	
+	last_linker_op = op;
+
+	if (op == 1) { // dlopen
+
+	    update_heap();
+
+	    const file = get_string(iovBase+12, op_length);
+	    
+	    console.log("--> dlopen: "+file);
+
+	    console.log(dynlibs);
+	    
+	    if (file in dynlibs) {
+		
+		last_linker_result = 1;
+	    }
+	    else {
+		
+		last_linker_result = 0;
+	    }
+
+	    console.log("<-- dlopen");
+	}
+	else if (op == 2) { // dlsym
+	    
+	    update_heap();
+
+	    const sym = get_string(iovBase+12, op_length);
+	    
+	    console.log("--> dlsym: "+sym);
+
+	    last_linker_result = 5;
+
+	    console.log("<-- dlsym");
+	}
+
+	return 0;
+    }
+
     for (let i = 0; i < len; i++) {
 
 	let buf = getI32(HEAPU8, iovs);
@@ -2071,8 +2385,9 @@ function p1_fd_seek(fd, offset, whence, retptr) {
 
     console.log("--> p1_fd_seek: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_seek fd="+fd+" offset="+offset+" whence="+whence+" retptr="+retptr);
@@ -2096,8 +2411,9 @@ function p1_poll_oneoff(_in, out, nsubscriptions, retptr) {
 
     console.log("--> p1_poll_oneoff: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     console.log(HEAPU8.subarray(_in, _in+128));
 
@@ -2105,7 +2421,7 @@ function p1_poll_oneoff(_in, out, nsubscriptions, retptr) {
 	print_trace("p1::poll_oneoff in="+_in+" out="+out+" nsubscriptions="+nsubscriptions+" retptr="+retptr);
     }
 
-    const sub_size = 40;
+    const sub_size = 48;
 
     let fd_array = new Array();
 
@@ -2115,7 +2431,7 @@ function p1_poll_oneoff(_in, out, nsubscriptions, retptr) {
 
 	console.log(getI64(HEAPU8, sub_size*i+_in)); // userdata
 
-	const tag = HEAPU8[32*i+_in+8];
+	const tag = HEAPU8[sub_size*i+_in+8];
 
 	console.log("tag="+tag);
 
@@ -2142,6 +2458,40 @@ function p1_poll_oneoff(_in, out, nsubscriptions, retptr) {
 
 	    fd_array.push({timeout: duration});
 	}
+	else if (tag == 1) { // __WASI_EVENTTYPE_FD_READ
+
+	    const fd = getI32(HEAPU8, sub_size*i+_in+16);
+
+	    console.log("fd="+fd);
+
+	    if (fd == dom_fd) {
+
+		if (Atomics.load(ringHdr, 0) !== Atomics.load(ringHdr, 1)) {
+
+		    setI32(HEAPU8, retptr, 1); // 1 event
+
+		    setI32(HEAPU8, out, getI32(HEAPU8, sub_size*i+_in));
+		    setI32(HEAPU8, out+4, getI32(HEAPU8, sub_size*i+_in+4));
+
+		    setI16(HEAPU8, out+8, 0); // error
+
+		    HEAPU8[out+10] = 1; // type
+
+		    setI32(HEAPU8, out+16, 4096); // nbytes
+		    setI32(HEAPU8, out+20, 0);
+		    
+		    return 0;
+		}
+		else {
+
+		    console.log("poll /dev/dom: no event !!!");
+		    
+		    fd_array.push({fd: fd, inout: 0});
+		}
+	    }
+	    
+	    //TODO
+	}
 	else {
 
 	    //TODO
@@ -2156,14 +2506,14 @@ function p1_poll_oneoff(_in, out, nsubscriptions, retptr) {
 
 	console.log("<-- poll: timeout");
 
-	setI32(HEAPU8, retptr, 1);
+	setI32(HEAPU8, retptr, 1); // 1 event
 
 	setI32(HEAPU8, out, getI32(HEAPU8, sub_size*timeout_idx+_in));
 	setI32(HEAPU8, out+4, getI32(HEAPU8, sub_size*timeout_idx+_in+4));
 
 	setI16(HEAPU8, out+8, 0); // error
 
-	HEAPU8[out+9] = 0; // type
+	HEAPU8[out+10] = 0; // type
 	
 	return 0;
     }
@@ -2177,8 +2527,9 @@ function p1_environ_sizes_get(count, size) {
 
     console.log("--> p1_environ_sizes_get: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::environ_sizes_get count="+count+" size="+size);
@@ -2199,8 +2550,9 @@ function p1_environ_get(ptrs, buf) {
 
     console.log("--> p1_environ_get: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::environ_get ptrs="+ptrs+" buf="+buf);
@@ -2235,8 +2587,9 @@ function p1_clock_res_get(id) {
 
     console.log("--> p1_clock_res_get: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::clock_res_get id="+id);
@@ -2249,10 +2602,10 @@ function p1_clock_time_get(id, precision, retptr) {
 
     update_heap();
 
-    console.log("--> p1_clock_time_get: "+arguments.length);
+    /*console.log("--> p1_clock_time_get: "+arguments.length);
     
     for (let i = 0; i < arguments.length; ++i)
-	console.log(arguments[i]);
+	console.log(arguments[i]);*/
 
     if (trace) {
 	print_trace("p1::clock_time_get id="+id+" precision="+precision+" retptr="+retptr);
@@ -2339,8 +2692,9 @@ function p1_fd_fdstat_get(fd, retptr) {
 
     console.log("--> p1_fd_fdstat_get: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_fdstat_get fd="+fd+" retptr="+retptr);
@@ -2383,8 +2737,9 @@ function p1_fd_fdstat_set_flags(fd) {
 
     console.log("--> p1_fd_fdstat_set_flags: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_fdstat_set_flags fd="+fd);
@@ -2399,8 +2754,9 @@ function p1_fd_fdstat_set_rights(fd) {
 
     console.log("--> p1_fd_fdstat_set_rights: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_fdstat_set_rights fd="+fd);
@@ -2415,8 +2771,9 @@ function p1_fd_filestat_get(fd, retptr) {
 
     console.log("--> p1_fd_filestat_get: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_filestat_get fd="+fd);
@@ -2498,8 +2855,9 @@ function p1_fd_filestat_set_size(fd) {
 
     console.log("--> p1_fd_filestat_set_size: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_filestat_set_size fd="+fd);
@@ -2514,8 +2872,9 @@ function p1_fd_filestat_set_times(fd) {
 
     console.log("--> p1_fd_filestat_set_times: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_filestat_set_times fd="+fd);
@@ -2530,8 +2889,9 @@ function p1_fd_pread(fd) {
 
     console.log("--> p1_fd_pread: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_pread fd="+fd);
@@ -2546,8 +2906,9 @@ function p1_fd_pwrite(fd) {
 
     console.log("--> p1_fd_pwrite: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_pwrite fd="+fd);
@@ -2562,8 +2923,9 @@ function p1_fd_renumber(fd) {
 
     console.log("--> p1_fd_renumber: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_renumber fd="+fd);
@@ -2578,8 +2940,9 @@ function p1_fd_sync(fd) {
 
     console.log("--> p1_fd_sync: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_sync fd="+fd);
@@ -2594,8 +2957,9 @@ function p1_fd_tell(fd, retptr) {
 
     console.log("--> p1_fd_tell: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::fd_tell fd="+fd);
@@ -2637,11 +3001,16 @@ function p1_path_create_directory(dirfd, path, path_len) {
 
     console.log("--> p1_path_create_directory: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::path_create_directory dirfd="+dirfd+" path="+path+" path_len="+path_len);
+
+	let td = new TextDecoder("utf-8");
+	
+	print_trace("path="+td.decode(HEAPU8.subarray(path, path+path_len)), false);
     }
 
     return (Syscalls.mkdirat).bind(Syscalls)(dirfd, path, path_len);
@@ -2653,8 +3022,9 @@ function p1_path_filestat_get(fd, flags, path, path_len, retptr) {
 
     console.log("--> p1_path_filestat_get: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	
@@ -2746,8 +3116,9 @@ function p1_path_filestat_set_times() {
 
     console.log("--> p1_path_filestat_set_times: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::path_filestat_set_times");
@@ -2763,8 +3134,9 @@ function p1_path_link() {
 
     console.log("--> p1_path_link: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::path_link");
@@ -2779,11 +3151,14 @@ function p1_path_readlink(fd, path, path_len, buf, buf_len, retptr) {
 
     console.log("--> p1_path_readlink: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::path_readlink fd="+fd+" path="+path+" path_len="+path_len+" buf="+buf+" buf_len="+buf_len+" retptr="+retptr);
+
+	
 
 	let td = new TextDecoder("utf-8");
 	
@@ -2795,20 +3170,25 @@ function p1_path_readlink(fd, path, path_len, buf, buf_len, retptr) {
     return 28; // __WASI_ERRNO_INVAL
 }
 
-function p1_path_remove_directory() {
+function p1_path_remove_directory(dirfd, path, path_len) {
 
     update_heap();
 
     console.log("--> p1_path_remove_directory: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
-
-    if (trace) {
-	print_trace("p1::path_remove_directory");
     }
 
-    //TODOO
+    if (trace) {
+	print_trace("p1::path_remove_directory fd="+dirfd+" path="+path+" path_len="+path_len);
+
+	let td = new TextDecoder("utf-8");
+	
+	print_trace("path="+td.decode(HEAPU8.subarray(path, path+path_len)), false);
+    }
+    
+    //return (Syscalls.rmdir).bind(Syscalls)(dirfd, path, path_len);
 }
 
 function p1_path_rename() {
@@ -2817,8 +3197,9 @@ function p1_path_rename() {
 
     console.log("--> p1_path_rename: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::path_rename");
@@ -2833,8 +3214,9 @@ function p1_path_symlink() {
 
     console.log("--> p1_path_symlink: "+arguments.length);
     
-    for (let i = 0; i < arguments.length; ++i)
+    for (let i = 0; i < arguments.length; ++i) {
 	console.log(arguments[i]);
+    }
 
     if (trace) {
 	print_trace("p1::path_symlink");
@@ -3106,7 +3488,7 @@ const wasi_preview2 = {
     },
     
     "wasi:sockets/udp-create-socket@0.y.z": {
-
+	
 	"create-udp-socket": create_udp_socket,
     },
     
@@ -3115,6 +3497,13 @@ const wasi_preview2 = {
 let importObject = {
     
     "wasi_snapshot_preview1": wasi_preview1,
+    "wasix_32v1": Wasix,
+    "env": {
+	/*"table": new WebAssembly.Table({
+	    element: "anyfunc",
+	    initial: 100
+	})*/
+    }
 }
 
 console.log(importObject);
@@ -3129,8 +3518,8 @@ self.onmessage = function(event) {
     let arr = event.data.file;
     let fileBuffer = arr.buffer;
     
-    const sharedEventArray = new Int32Array(sharedEventBuffer);
-    const sharedDataArray = new Uint8Array(sharedDataBuffer);
+    sharedEventArray = new Int32Array(sharedEventBuffer);
+    sharedDataArray = new Uint8Array(sharedDataBuffer);
 
     Syscalls.init(event.data.pid, sharedEventArray, sharedDataArray);
 
@@ -3492,7 +3881,7 @@ function insertExport(name, obj) {
     }
 }
 
-function moduleInstantiated(instance) {
+function moduleInstantiated(instance, table) {
 
     instances.push(instance);
 
@@ -3510,6 +3899,150 @@ function moduleInstantiated(instance) {
 	console.log(key);
 
 	insertExport(key, value);
+
+	if (key === "get_dependencies") {
+
+	    dependencies.push([instance, table]);
+	}
+    }
+}
+
+function loadLib(instance, table, libs, callback) {
+
+    if (libs.length > 0) {
+
+	let lib = libs[0];
+
+	if (lib.length == 0) {
+
+	    loadLib(instance, table, libs.slice(1), callback);
+	    return;
+	}
+	
+	console.log("--> loadLib: "+lib);
+
+	let lib_fd = (Syscalls.openat).bind(Syscalls)(-100, lib, lib.length, 0, 0);
+
+	console.log("openat -> lib_fd="+lib_fd);
+	
+	if (lib_fd >= 0) {
+
+	    const max_length = 16*1024*1024;
+	    
+	    const buf = (Syscalls.blocking_read).bind(Syscalls)(lib_fd, max_length, 0);
+
+	    console.log(buf);
+
+	    let _errno = buf[8] | (buf[9] << 8) | (buf[10] << 16) |  (buf[11] << 24);
+
+	    if (_errno == 0) {
+
+		let bytes_read = buf[16] | (buf[17] << 8) | (buf[18] << 16) |  (buf[19] << 24);
+
+		console.log("openat -> bytes_read="+bytes_read);
+
+		let importObj = {
+
+		    env: {
+
+			memory: instance.exports.memory,
+			__stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0), // TODO: provide right value exported by main module and not 0
+			__memory_base: 0,
+			__table_base: 0
+		    }
+		};
+
+		WebAssembly.instantiate(buf.subarray(20, 20+bytes_read), importObj).then((obj) => {
+
+		    ((Syscalls.close).bind(Syscalls))(lib_fd);
+
+		    dynlibs[lib] = obj.instance;
+		    
+		    let oldSize = 0;
+
+		    for (const [key, value] of Object.entries(obj.instance.exports)) {
+
+			if (typeof value === "function") {
+
+			    if (key === "__wasm_call_ctors") {
+
+				value();
+			    }
+			    else {
+
+				oldSize = table.grow(1); // returns previous size
+				
+				table.set(oldSize, value);
+				
+				console.log("Insert export "+key+" at "+oldSize);
+			    }
+			}
+		    }
+		    
+		    loadLib(instance, table, libs.slice(1), callback);
+		    
+		}).catch((e) => {
+
+		    ((Syscalls.close).bind(Syscalls))(lib_fd);
+
+		    console.log(e);
+
+		    loadLib(instance, table, libs.slice(1), callback);
+		    
+		});
+	    }
+	    else {
+
+		((Syscalls.close).bind(Syscalls))(lib_fd);
+
+		loadLib(instance, table, libs.slice(1), callback);
+
+	    }
+	}
+	else {
+
+	    loadLib(instance, table, libs.slice(1), callback);
+	}
+    }
+    else {
+
+	callback();
+    }
+}
+
+function loadDependencies(deps, callback) {
+
+    if (deps.length > 0) {
+
+	console.log("--> loadDependencies");
+
+	const [instance, table] = deps[0];
+	
+	const ptr = instance.exports.get_dependencies();
+	
+	const memory = instance.exports.memory;
+	const bytes = new Uint8Array(memory.buffer);
+
+	let end = ptr;
+	
+	while (bytes[end] !== 0) {
+	    end++;
+	}
+
+	const str = new TextDecoder("utf-8").decode(bytes.subarray(ptr, end));
+
+	const libs = str.split("\n");
+
+	console.log(libs);
+
+	loadLib(instance, table, libs, () => {
+
+	    loadDependencies(deps.slice(1), callback);
+	});	
+    }
+    else {
+
+	callback();
     }
 }
 
@@ -3519,12 +4052,20 @@ function instantiateModule(modules, version) {
 
     if (modules.length > 0) {
 
+	const table = new WebAssembly.Table({
+	    element: "anyfunc", // or "funcref" on newer engines
+	    initial: 5,
+	    maximum: 65536
+	});
+
+	importObject.env.__indirect_function_table = table;
+
 	WebAssembly.instantiate(modules[0].slice(0, modules[0].module_length), importObject).then((obj) => {
 
 		//console.log(obj);
 		//console.log(JSON.stringify(obj.instance.exports));
 
-		moduleInstantiated(obj.instance);
+	    moduleInstantiated(obj.instance, table);
 
 	    instantiateModule(modules.slice(1), version);
 	    
@@ -3532,7 +4073,7 @@ function instantiateModule(modules, version) {
 
 		console.log(e);
 
-		const buf = new TextEncoder().encode(e.message+"\n");
+		const buf = new TextEncoder().encode("Error: "+e.message+"\n");
 
 		((Syscalls.blocking_write_and_flush).bind(Syscalls))(2, buf, buf.length, 0);
 
@@ -3542,33 +4083,43 @@ function instantiateModule(modules, version) {
     }
     else {
 
-	try {
+	loadDependencies(dependencies, () => { 
 
-	    do_preopens();
+	    try {
 
-	    console.log("--> run");
+		do_preopens();
 
-	    let start_func = "";
+		console.log("--> run");
 
-	    if (version == 0x01) {
+		let start_func = "";
 
-		start_func = "_start";
+		if (version == 0x01) {
+
+		    start_func = "_start";
+		}
+		else {
+
+		    start_func = "wasi:cli/run@0.2.0#run";
+		}
+
+		(getFunc(start_func))();
 	    }
-	    else {
+	    catch (e) {
 
-		start_func = "wasi:cli/run@0.2.0#run";
+		console.log(e);
+
+		const buf = new TextEncoder().encode("Error: "+e.message+"\n");
+
+		((Syscalls.blocking_write_and_flush).bind(Syscalls))(2, buf, buf.length, 0);
+
+		((Syscalls.exit).bind(Syscalls))(-1);
 	    }
+	    
+	    console.log("End of program execution");
 
-	    (getFunc(start_func))();
-	}
-	catch (error) {
-
-	    console.log(error);
-	}
-	
-	console.log("End of program execution");
-
-	((Syscalls.exit).bind(Syscalls))(0);
+	    ((Syscalls.exit).bind(Syscalls))(0);
+	    
+	});
     }
 }
 
@@ -3590,3 +4141,23 @@ function u32(array, offset) {
 
     return [val, offset];
 }
+
+// Non-blocking read: copy one record into WASM memory; return 0 if ring empty.
+function readFromRing(ptr, maxLen) {
+  const N    = RING_DATA;
+  const wIdx = Atomics.load(ringHdr, 0);
+  const rIdx = Atomics.load(ringHdr, 1);
+  if (wIdx === rIdx) return 0; // empty
+  const mem = new Uint8Array(memory.buffer, ptr, maxLen);
+  let n = 0;
+  let cur = rIdx;
+  while (n < maxLen && cur !== wIdx) {
+    const byte = ringData[cur % N];
+    cur++;
+    mem[n++] = byte;
+    if (byte === 10) break; // newline = end of record
+  }
+  Atomics.store(ringHdr, 1, cur);
+  return n;
+}
+

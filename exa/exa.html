@@ -23,11 +23,18 @@
 
 <body>
 
-  <script>
+  <script type="module">
 
-    console.log("Starting wex 0.2.0 ...");
+    import { makeSvgProcessor } from '../js/svg-processor.js';
+    import { makeDomProcessor } from '../js/dom-processor.js';
+
+    console.log("Starting wex 0.3.0 ...");
+
+    //console.log = function() {};
 
     const pid = parseInt(window.frameElement.getAttribute('pid'));
+
+    var memory;
 
     function write_error(error, callback) {
 
@@ -70,7 +77,7 @@
 
 	const help = `Usage: wex [options] filename
 
-  WebAssembly WASI runtime (0.1 & 0.2)
+  WebAssembly WASI runtime (0.1 & 0.2) with WASIX extension (starting)
 
 options:
   -d, --dir <HOST_DIR[::GUEST_DIR]>            Grant access of a host directory to a guest.
@@ -84,7 +91,7 @@ options:
 
     function print_version() {
 
-	const version = "wex 0.2.0\n";
+	const version = "wex 0.3.0\n";
 	
 	write_error(version, () => { exa.exit(0); });
     }
@@ -165,6 +172,23 @@ options:
 	return [input, i, trace, info, directories];
     }
 
+    function get_string(path, len) {
+
+	let td = new TextDecoder("utf-8");
+
+	if (memory.buffer instanceof SharedArrayBuffer) {
+
+	    const view = new Uint8Array(memory.buffer, path, len);
+	    const copy = view.slice();
+	    
+	    return td.decode(copy);
+	}
+	else {
+	    
+	    return td.decode(HEAPU8.subarray(path, path+len));
+	}
+    }
+
     function start_worker(wasm, input_pos, trace, info, directories) {
 
 	const sharedEventBuffer = new SharedArrayBuffer(4);
@@ -196,6 +220,10 @@ options:
 	var timers = {};
 	
 	var select_timer;
+
+	var svg_processor;
+	var dom_processor;
+	var dom_select;
 
 	/*const bc = new BroadcastChannel("bc");
 
@@ -317,6 +345,251 @@ options:
 		    clearTimeout(select_timer);
 		    select_timer = null;
 		}
+            }
+            else if ( (message.data.op == 'open_svg') || (message.data.op == 'open_dom') ) {
+
+		memory = message.data.mem;
+
+              exa.show();
+
+              const top = document.createElement("div");
+
+              top.style.width = "fit-content";
+		top.style.height = "fit-content";
+		top.style.position = "absolute";
+		top.style.top = "0px";
+		top.style.left = "0px";
+		
+		
+
+              const deco = document.createElement("div");
+              deco.id = "deco";
+      
+		top.appendChild(deco);
+
+		deco.addEventListener("mousedown", (event) => {
+
+		    console.log("Decoration mouse down: "+event.target.id);
+
+		    if (event.target.id == 'close') {
+
+			exa.exit(0);
+		      
+		    event.stopPropagation();
+		  }
+	          else if (event.target.id == 'max') {
+
+		    event.stopPropagation();
+		  }
+		  else if (event.target.id == 'min') {
+
+		    let m = new Object();
+	
+		    m.type = 12; // minimize
+		    m.pid = pid & 0x0000ffff;
+		    
+		    window.parent.postMessage(m);
+		
+		    event.stopPropagation();
+		  }
+		  else if (event.target.id == 'axel') {
+
+		    let m = new Object();
+	
+		    m.type = 14; // axel
+		    m.pid = pid & 0x0000ffff;
+		    
+		    window.parent.postMessage(m);
+		
+		    event.stopPropagation();
+		  }
+		  else {
+		  
+		    if (!window.selected_toplevel) {
+
+			console.log("Select toplevel");
+			
+
+		      window.selected_toplevel = top;
+		
+		      window.selected_x = event.clientX;
+		      window.selected_y = event.clientY;
+		      window.start_x = parseInt(window.selected_toplevel.style.left);
+			window.start_y = parseInt(window.selected_toplevel.style.top);
+
+			console.log(window.selected_toplevel.style.left);
+		    }
+		    
+		    const svg = window.selected_toplevel.getElementsByTagName("svg")[0];
+
+		    if (svg) {
+		      svg.focus();
+		    }
+
+		    event.stopPropagation();
+		    event.preventDefault();
+		    
+		  }
+	      
+		}, false);
+
+	  top.addEventListener("mousedown", (event) => {
+
+	      //console.log("Window mouse down");
+	      //console.log(event);
+		
+	      event.stopPropagation();
+	      
+	  }, false);
+
+	document.body.addEventListener("mousemove", (event) => {
+
+	    console.log("Body mouse move");
+	    console.log(window.selected_toplevel);
+
+	      if (window.selected_toplevel) {
+
+		window.selected_toplevel.style.left = (window.start_x+event.clientX-window.selected_x)+"px";
+		window.selected_toplevel.style.top = (window.start_y+event.clientY-window.selected_y)+"px";
+	      }
+	      
+	    }, false);
+
+	  document.body.addEventListener("mousedown", (event) => {
+
+	      console.log("Body mouse down: click outside window !");
+	      //console.log(event);
+
+	      let m = new Object();
+	
+	      m.type = 8; // mouse down
+	      m.pid = pid & 0x0000ffff;
+	      m.x = event.clientX;
+	      m.y = event.clientY;
+
+	      window.parent.postMessage(m);
+	      
+	      }, false);
+
+	  document.body.addEventListener("mouseup", (event) => {
+
+	      //console.log("Body mouse up");
+
+	      window.selected_toplevel = null;
+	      
+	  }, false);
+
+		if (message.data.op == 'open_svg') {
+
+		const SVG_NS  = 'http://www.w3.org/2000/svg';
+      
+		const svg = document.createElementNS(SVG_NS, 'svg');
+		
+		svg.id = "__root";
+    
+		/*svg.setAttribute('width', String(width));
+		svg.setAttribute('height', String(height));
+		svg.setAttribute('viewBox', viewBox || `0 0 ${width} ${height}`);*/
+		
+		svg.setAttribute('xmlns', SVG_NS);
+		
+		svg.style.backgroundColor = "#000000";
+		svg.style.display = "block";
+
+		const defs = document.createElementNS(SVG_NS, 'defs');
+		
+		svg.insertBefore(defs, svg.firstChild);
+
+		    top.appendChild(svg);
+
+		    svg_processor = makeSvgProcessor(svg, defs);
+		    
+		}
+		else if (message.data.op == 'open_dom') {
+
+		    const div = document.createElement('div');
+		
+		    div.id = "__root";
+		    
+		    top.appendChild(div);
+
+		    [ dom_processor, dom_select ] = makeDomProcessor(div, message.data.sab, () => { return memory; });
+		}
+              
+	      document.body.appendChild(top);
+		
+		loadDeco(function() {
+
+		   Atomics.store(sharedEventArray, 0, 255);
+		   Atomics.notify(sharedEventArray, 0);
+		});
+            }
+            else if (message.data.op == 'show_svg') {
+
+		const arr = message.data.arr;
+
+		let cmd = '';
+
+		for (let i = 0; i < arr.length; i++) {
+		    
+		    const chunk = get_string(arr[i][0], arr[i][1]);
+	    
+		    cmd += chunk;
+		}
+		
+		//console.log(cmd);
+
+		// Process complete lines
+		let nl;
+		
+		while ((nl = cmd.indexOf('\n')) !== -1) {
+		    const line = cmd.slice(0, nl);
+		    cmd = cmd.slice(nl + 1);
+		    svg_processor(line);
+		}
+
+		Atomics.store(sharedEventArray, 0, 255);
+		Atomics.notify(sharedEventArray, 0);
+            }
+	    else if (message.data.op == 'show_dom') {
+
+		const arr = message.data.arr;
+
+		let cmd = '';
+
+		for (let i = 0; i < arr.length; i++) {
+		    
+		    const chunk = get_string(arr[i][0], arr[i][1]);
+	    
+		    cmd += chunk;
+		}
+		
+		//console.log(cmd);
+
+		// Process complete lines
+		let nl;
+		
+		while ((nl = cmd.indexOf('\n')) !== -1) {
+		    const line = cmd.slice(0, nl);
+		    cmd = cmd.slice(nl + 1);
+		    dom_processor(line);
+		}
+
+		Atomics.store(sharedEventArray, 0, 255);
+		Atomics.notify(sharedEventArray, 0);
+            }
+	    else if (message.data.op == 'select_dom') {
+
+		console.log("!!! select_dom: start="+message.data.start);
+
+		if (message.data.start) {
+		    
+		    dom_select(sharedEventArray, sharedDataArray);
+		}
+		else {
+		    
+		    dom_select(null, null);
+		}
 	    }
 	    
 	});
@@ -328,7 +601,23 @@ options:
 	worker.postMessage({pid: pid, eventBuf: sharedEventBuffer, dataBuf: sharedDataBuffer, file: wasm, args: args, env_count: exa.env_count, env_size: exa.env_size, env: exa.env, trace: trace, info: info, directories: directories});
 	
     }
-    
+
+      function loadDeco(callback) {
+
+      let deco = document.getElementById("deco");
+
+      const request = new Request("/netfs/etc/xdg/system/deco.html");
+
+      fetch(request)
+      .then((response) => response.text())
+      .then((text) => {
+
+      deco.innerHTML += text.replace("[TITLE]", "SVG");
+
+      callback();
+      });
+      }
+      
     exa.init();
 
     exa.args_env().then(function() {

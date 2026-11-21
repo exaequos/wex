@@ -1,8 +1,24 @@
+var timer_fd = 0x70000000;
+var svg_fd = 0x7c000000;
+var dom_fd = 0x7d000000;
+
 const Syscalls = {
 
     pid: -1,
 
     fd_table: {},
+
+    channels: {},
+
+    get_channel(ch) {
+
+	if (!(ch in this.channels)) {
+
+	    this.channels[ch] = new BroadcastChannel(ch);
+	}
+
+	return this.channels[ch];
+    },
 
     init(pid, sharedEventArray, sharedDataArray) {
 
@@ -11,14 +27,37 @@ const Syscalls = {
 	this.sharedDataArray = sharedDataArray;
 	
 	this.rcv_bc_channel_name = "channel.process."+this.pid;
-	this.resmgr_bc_channel = new BroadcastChannel("/var/resmgr.peer");
+	this.resmgr_bc_channel = this.get_channel("/var/resmgr.peer");
 
 	console.log(this);
     },
-
+    
     is_open(fd) {
 
 	console.log("Syscalls.is_open: fd="+fd);
+
+	if ( (fd == svg_fd) || (fd == dom_fd) ) { // /dev/svg or /dev/dom
+	    
+	    let desc = {
+
+		fd: fd,
+		remote_fd: -1,
+		peer: "",
+		type: 0,
+		major: 0,
+		
+		error: null, // Used in getsockopt for SOL_SOCKET/SO_ERROR test
+		peers: {},
+		pending: [],
+		recv_queue: [],
+		name: null,
+		bc: null,
+	    };
+
+	    this.fd_table[fd] = desc;
+	    
+	    return 0;
+	}
 
 	let buf_size = 20;
 
@@ -549,7 +588,7 @@ const Syscalls = {
 		len: buf_size
 	    };
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    driver_bc.postMessage(msg);
 	};
@@ -659,7 +698,7 @@ const Syscalls = {
 		len: buf_size
 	    };
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    driver_bc.postMessage(msg);
 	};
@@ -764,7 +803,7 @@ const Syscalls = {
 		len: buf_size
 	    };
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    driver_bc.postMessage(msg);
 	};
@@ -887,7 +926,7 @@ const Syscalls = {
 		len: buf_size
 	    };
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    driver_bc.postMessage(msg);
 	};
@@ -997,7 +1036,7 @@ const Syscalls = {
 		len: buf_size
 	    };
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    driver_bc.postMessage(msg);
 	};
@@ -1274,7 +1313,7 @@ const Syscalls = {
 
 	    console.log("Send connect msg to "+this.fd_table[fd].peer);
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    Atomics.store(this.sharedEventArray, 0, 0);
 
@@ -1347,7 +1386,7 @@ const Syscalls = {
 
 	    console.log("Send bind msg to "+this.fd_table[fd].peer);
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    Atomics.store(this.sharedEventArray, 0, 0);
 
@@ -1463,7 +1502,7 @@ const Syscalls = {
 		len: buf_size
 	    };
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    driver_bc.postMessage(msg);
 	};
@@ -1580,7 +1619,7 @@ const Syscalls = {
 		len: buf_size
 	    };
 
-	    let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+	    let driver_bc = this.get_channel(this.fd_table[fd].peer);
 	    
 	    driver_bc.postMessage(msg);
 	};
@@ -1644,6 +1683,7 @@ const Syscalls = {
     poll(fd_array) {
 
 	console.log("--> poll");
+	console.log(JSON.stringify(fd_array));
 	
 	let ms = -1;
 
@@ -1674,9 +1714,19 @@ const Syscalls = {
 
 	    console.log("do_select: fd="+fd+", rw="+rw+", start="+start);
 
-	    if (fd >= 0x70000000) { // timer
+	    if (fd >= 0x70000000) { // timer or dom
 
-		//TODO
+		if (fd == dom_fd) {
+
+		    const msg = {
+
+			op: 'select_dom',
+			rw: rw,
+			start: start,
+		    };
+
+		    self.postMessage(msg);
+		}
 
 		return ;
 	    }
@@ -1765,7 +1815,7 @@ const Syscalls = {
 
 		//console.log("__syscall_pselect6: peer="+Module['fd_table'][fd].peer);
 
-		let driver_bc = new BroadcastChannel(this.fd_table[fd].peer);
+		let driver_bc = this.get_channel(this.fd_table[fd].peer);
 		
 		driver_bc.postMessage(msg);
 	    }

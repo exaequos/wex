@@ -1,0 +1,256 @@
+/**
+ * dom-processor.js — DOM protocol message processor.
+ *
+ * Parses the text-based DOM protocol produced by woua programs and applies
+ * each message to a live HTML container element.
+ *
+ * Protocol (each message is a single newline-terminated line):
+ *   <tag id="ID" attr="val".../>              — upsert element (self-closing)
+ *   <tag id="ID" attr="val"...>TEXT</tag>     — upsert element with text content
+ *   <!clear>                                  — remove all children from root
+ *   <!parent ID>                              — set insertion context to element ID
+ *   <!parent-root>                            — reset insertion context to root
+ *   <!remove ID>                              — remove element with id ID
+ *   <!style ID CSS>                           — element.setAttribute('style', CSS)
+ *   <!class ID CLASSNAME>                     — element.className = CLASSNAME
+ *   <!text ID TEXT>                           — element.textContent = TEXT
+ *   <!attr ID NAME VALUE>                     — element.setAttribute(NAME, VALUE)
+ *
+ * The special id "__root" in directives refers to the root container element.
+ *
+ * Usage:
+ *   import { makeDomProcessor } from './dom-processor.js';
+ *
+ *   const process = makeDomProcessor(containerElement);
+ *   process(line);   // call for each complete protocol line
+ */
+
+/**
+ * Create a stateful processor bound to a specific container element.
+ *
+ * @param {HTMLElement} root - The root container element to operate on.
+ * @returns {(line: string) => void}
+ */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+export function makeDomProcessor(root) {
+  let insertionParent = root;
+
+    return function processMessage(line, wasmMemory) {
+
+	console.log("dom-processor: processMessage");
+	console.log(line);
+	
+    line = line.trim();
+    if (!line) return;
+
+    // ── Directives: <!...> ────────────────────────────────────────────────
+    if (line.startsWith('<!')) {
+      const inner = line.slice(2, -1).trim();
+
+      if (inner === 'clear') {
+        root.innerHTML = '';
+        insertionParent = root;
+        return;
+      }
+
+      if (inner === 'parent-root') {
+        insertionParent = root;
+        return;
+      }
+
+      if (inner.startsWith('remove ')) {
+        const el = document.getElementById(inner.slice(7).trim());
+        if (el) el.parentNode.removeChild(el);
+        return;
+      }
+
+      if (inner.startsWith('parent ')) {
+        insertionParent = document.getElementById(inner.slice(7).trim()) ?? root;
+        return;
+      }
+
+      if (inner.startsWith('style ')) {
+        const rest = inner.slice(6);
+        const sp = rest.indexOf(' ');
+        if (sp !== -1) {
+          const id = rest.slice(0, sp);
+          const el = id === '__root' ? root : document.getElementById(id);
+          el?.setAttribute('style', rest.slice(sp + 1));
+        }
+        return;
+      }
+
+      if (inner.startsWith('class ')) {
+        const rest = inner.slice(6);
+        const sp = rest.indexOf(' ');
+        if (sp !== -1) {
+          const id = rest.slice(0, sp);
+          const el = id === '__root' ? root : document.getElementById(id);
+          if (el) el.className = rest.slice(sp + 1);
+        }
+        return;
+      }
+
+      if (inner.startsWith('text ')) {
+        const rest = inner.slice(5);
+        const sp = rest.indexOf(' ');
+        if (sp !== -1) {
+          const id = rest.slice(0, sp);
+          const el = id === '__root' ? root : document.getElementById(id);
+          if (el) el.textContent = rest.slice(sp + 1);
+        }
+        return;
+      }
+
+      if (inner.startsWith('attr ')) {
+        // <!attr ID NAME VALUE>
+        const rest = inner.slice(5);
+        const sp1 = rest.indexOf(' ');
+        if (sp1 !== -1) {
+          const id    = rest.slice(0, sp1);
+          const rest2 = rest.slice(sp1 + 1);
+          const sp2   = rest2.indexOf(' ');
+          if (sp2 !== -1) {
+            const el = id === '__root' ? root : document.getElementById(id);
+            el?.setAttribute(rest2.slice(0, sp2), rest2.slice(sp2 + 1));
+          }
+        }
+        return;
+      }
+
+	// <!getval ID> — ask main thread to push element's .value into the ring.
+	if (inner.startsWith('getval ')) {
+	    console.log("dom-processor: getval TODO");
+        self.postMessage({ type: 'getval', elemId: line.slice(7, -1) });
+        return;
+      }
+
+      // <!canvas-put ID PTR W H> — copy pixels from WASM memory, post transferable.
+      if (inner.startsWith('canvas-put ') && wasmMemory) {
+        
+        const parts = inner.slice(11, -1).split(' ');
+        if (parts.length === 4) {
+          const id  = parts[0];
+          const ptr = parseInt(parts[1], 10);
+          const w   = parseInt(parts[2], 10);
+          const h   = parseInt(parts[3], 10);
+          const bytes = new Uint8Array(w * h * 4);
+            bytes.set(new Uint8Array(wasmMemory.buffer, ptr, w * h * 4));
+
+	    console.log("dom-processor: canvas-put TODO");
+          self.postMessage({ type: 'canvas-put', id, buffer: bytes.buffer, w, h }, [bytes.buffer]);
+        }
+	  return;
+      }
+
+      // <!canvas ID W H PTR> — ask main thread to create the canvas element.
+      if (inner.startsWith('canvas ')) {
+        const parts = line.slice(7, -1).split(' ');
+        if (parts.length === 4) {
+          const id  = parts[0];
+          const w   = parseInt(parts[1], 10);
+          const h   = parseInt(parts[2], 10);
+          const ptr = parseInt(parts[3], 10);
+            canvasMap.set(id, { ptr, w, h, auto: ptr !== 0 });
+
+	    console.log("dom-processor: canvas TODO");
+          self.postMessage({ type: 'canvas', id, w, h, ptr });
+        }
+	  return;
+      }
+
+      // <!listen ID CODE> / <!unlisten ID CODE> — relay to main thread.
+      if (inner.startsWith('listen ') || inner.startsWith('<!unlisten ')) {
+        const isListen = inner.startsWith('listen ');
+        const inner2    = inner.slice(isListen ? 7 : 9, -1);
+        const sp       = inner2.indexOf(' ');
+          if (sp >= 0) {
+	      console.log("dom-processor: listen TODO");
+          self.postMessage({
+            type:    isListen ? 'listen' : 'unlisten',
+            elemId:  inner2.slice(0, sp),
+            evtCode: parseInt(inner2.slice(sp + 1), 10),
+          });
+        }
+        return;
+      }
+
+      // <!css-raw PTR LEN> — read bytes from WASM memory, decode as UTF-8, send as CSS.
+      if (inner.startsWith('css-raw ') && wasmMemory) {
+        const parts = inner.slice(10, -1).split(' ');
+        if (parts.length === 2) {
+          const ptr  = parseInt(parts[0], 10);
+          const len  = parseInt(parts[1], 10);
+          const copy = new Uint8Array(len);
+            copy.set(new Uint8Array(wasmMemory.buffer, ptr, len));
+	    console.log("dom-processor: css-raw TODO");
+          self.postMessage({ type: 'css', text: new TextDecoder().decode(copy) });
+        }
+	  return;
+      }
+
+      // <!blob BLOB-ID PTR LEN MIME> — read bytes from WASM memory here in the
+      // worker (direct access) and send them as a transferable ArrayBuffer.
+      if (inner.startsWith('blob ') && wasmMemory) {
+        const inner2 = inner.slice(7, -1); // strip '<!blob ' and trailing '>'
+        const sp1   = inner2.indexOf(' ');
+        if (sp1 >= 0) {
+          const blobId = inner2.slice(0, sp1);
+          const rest1  = inner2.slice(sp1 + 1);
+          const sp2    = rest1.indexOf(' ');
+          if (sp2 >= 0) {
+            const ptr   = parseInt(rest1.slice(0, sp2), 10);
+            const rest2 = rest1.slice(sp2 + 1);
+            const sp3   = rest2.indexOf(' ');
+            if (sp3 >= 0) {
+              const len  = parseInt(rest2.slice(0, sp3), 10);
+              const mime = rest2.slice(sp3 + 1);
+              const bytes = new Uint8Array(len);
+		bytes.set(new Uint8Array(wasmMemory.buffer, ptr, len));
+		console.log("dom-processor: blob TODO");
+              self.postMessage({ type: 'blob', blobId, mime, buffer: bytes.buffer }, [bytes.buffer]);
+            }
+          }
+        }
+	  return;
+      }
+
+      return; // unknown directive — ignore
+    }
+
+    // ── HTML elements ─────────────────────────────────────────────────────
+    let tagName, attrsStr, textContent = null;
+
+    const fullMatch = line.match(
+      /^<([a-zA-Z][a-zA-Z0-9]*)\s+([^>]*)>([^<]*)<\/[a-zA-Z][a-zA-Z0-9]*>$/
+    );
+    if (fullMatch) {
+      [, tagName, attrsStr, textContent] = fullMatch;
+    } else {
+      const selfMatch = line.match(/^<([a-zA-Z][a-zA-Z0-9]*)\s*(.*?)\s*\/>$/);
+      if (!selfMatch) return;
+      [, tagName, attrsStr] = selfMatch;
+    }
+
+    const attrRe = /([a-zA-Z][a-zA-Z0-9_:-]*)="([^"]*)"/g;
+    const attrs  = {};
+    let m;
+    while ((m = attrRe.exec(attrsStr)) !== null) attrs[m[1]] = m[2];
+
+    const id = attrs['id'];
+    if (!id) return; // id is required by protocol
+
+    let el = document.getElementById(id);
+    if (!el) {
+      const inSvg = insertionParent instanceof SVGElement;
+      el = (inSvg || tagName === 'svg')
+        ? document.createElementNS(SVG_NS, tagName)
+        : document.createElement(tagName);
+      insertionParent.appendChild(el);
+    }
+
+    for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
+    if (textContent !== null) el.textContent = textContent;
+  };
+}
