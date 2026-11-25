@@ -28,13 +28,99 @@
     import { makeSvgProcessor } from '../js/svg-processor.js';
     import { makeDomProcessor } from '../js/dom-processor.js';
 
-    console.log("Starting wex 0.3.0 ...");
+    console.log("Starting wex 0.4.0 ...");
 
     //console.log = function() {};
 
     const pid = parseInt(window.frameElement.getAttribute('pid'));
 
     var memory;
+
+    const WS_URL = "wss://vps-04ec407a.vps.ovh.net:443/ws2";
+
+    var windowId = null;
+    var socket;
+
+    var writeEventToRing;
+
+    function do_connect(window_id, callback) {
+
+	console.log("[wex] Connecting:", WS_URL);
+
+	try {
+            socket = new WebSocket(WS_URL);
+
+            socket.onopen = () => {
+		
+		console.log("[wex] Connected");
+		
+		const handshake = {
+                    type: "connect",
+                    client_type: "window",
+                    window_id: window_id
+		};
+		
+		socket.send(JSON.stringify(handshake));
+            };
+
+            socket.onmessage = (event) => {
+		
+		let message;
+
+		try {
+		    
+		    message = JSON.parse(event.data);
+
+		    if ((message.type === "connected") && (message.client_type === "window")) {
+
+			windowId = window_id;
+
+			callback();
+		    }
+		    else if ((message.type === "event") && (message.client_type === "window")) {
+
+			//console.log("[wex]: Event received");
+			//console.log(message.event);
+			
+			writeEventToRing(message.event); // .replace(/,/g, "\\t").replace(/;/g, "\\n")
+		    }
+		    
+		} catch (error) {
+		    
+		    console.error("Error :", error);
+
+                    if (error instanceof Error) {
+			console.error("Message :", error.message);
+			console.error("Stack :", error.stack);
+                    }
+		    return;
+		}
+
+		console.log(
+		    "[wex] Received:",
+		    message
+		);	
+            };
+
+            socket.onerror = (error) => {
+		console.error(
+		    "[wex] WebSocket error",
+		    error
+		);
+            };
+
+            socket.onclose = () => {
+		console.log("[wex] Disconnected");
+            };
+
+	} catch (error) {
+	    
+            console.error(
+		"[wex] Connection failed",
+		error
+            );
+	}
+    }
 
     function write_error(error, callback) {
 
@@ -81,6 +167,7 @@
 
 options:
   -d, --dir <HOST_DIR[::GUEST_DIR]>            Grant access of a host directory to a guest.
+  -w, --window <WINDOW_ID>                     Redirect display a remote window
   -h, --help                                   Print this help message.
   -v, --version                                Print version information.
   -t, --trace                                  Print syscalls.\n`;
@@ -91,7 +178,7 @@ options:
 
     function print_version() {
 
-	const version = "wex 0.3.0\n";
+	const version = "wex 0.4.0\n";
 	
 	write_error(version, () => { exa.exit(0); });
     }
@@ -102,7 +189,9 @@ options:
 	let trace = false;
 	let info = false;
 	let dir_expected = false;
-	let directories = "";
+        let directories = "";
+        let window_id = null;
+        let window_id_expected = false;
 
 	let i = 0;
 
@@ -129,9 +218,26 @@ options:
 		    dir_expected = false;
 		}
 	    }
+	    else if (window_id_expected) {
+
+		if (arg.indexOf("-") == 0) {
+
+		    write_error("Window id expected\n", () => { print_help() });
+		    return [ null ];
+		}
+		else {
+		    
+		    window_id = arg;
+		    window_id_expected = false;
+		}
+	    }
 	    else if ( (arg === "--dir") || (arg === "-d") ) {
 
 		dir_expected = true;
+	    }
+	    else if ( (arg === "--window") || (arg === "-w") ) {
+
+		window_id_expected = true;
 	    }
 	    else if ( (arg === "--help") || (arg === "-h") ) {
 
@@ -169,7 +275,7 @@ options:
 	    return [ null ];
 	}
 
-	return [input, i, trace, info, directories];
+	return [input, i, trace, info, directories, window_id];
     }
 
     function get_string(path, len) {
@@ -187,6 +293,19 @@ options:
 	    
 	    return td.decode(HEAPU8.subarray(path, path+len));
 	}
+    }
+
+    function uint8ToBase64(bytes) {
+	let binary = "";
+
+	const chunkSize = 0x8000;
+
+	for (let i = 0; i < bytes.length; i += chunkSize) {
+            const chunk = bytes.subarray(i, i + chunkSize);
+            binary += String.fromCharCode(...chunk);
+	}
+
+	return btoa(binary);
     }
 
     function start_worker(wasm, input_pos, trace, info, directories) {
@@ -349,6 +468,24 @@ options:
             else if ( (message.data.op == 'open_svg') || (message.data.op == 'open_dom') ) {
 
 		memory = message.data.mem;
+
+		if (windowId) {
+
+		    if (message.data.op == 'open_dom') {
+
+			let dummy;
+			
+			[ dummy, dom_select, writeEventToRing ] = makeDomProcessor(null, message.data.sab, () => { return memory; });
+
+			console.log("open_dom !!!");
+			console.log(writeEventToRing);
+		    }
+
+		    Atomics.store(sharedEventArray, 0, 255);
+		    Atomics.notify(sharedEventArray, 0);
+
+		    return;
+		}
 
               exa.show();
 
@@ -513,7 +650,7 @@ options:
 		    
 		    top.appendChild(div);
 
-		    [ dom_processor, dom_select ] = makeDomProcessor(div, message.data.sab, () => { return memory; });
+		    [ dom_processor, dom_select, writeEventToRing ] = makeDomProcessor(div, message.data.sab, () => { return memory; });
 		}
               
 	      document.body.appendChild(top);
@@ -566,13 +703,100 @@ options:
 		
 		//console.log(cmd);
 
-		// Process complete lines
-		let nl;
-		
-		while ((nl = cmd.indexOf('\n')) !== -1) {
-		    const line = cmd.slice(0, nl);
-		    cmd = cmd.slice(nl + 1);
-		    dom_processor(line);
+		if (windowId) {
+
+		    const full_cmd = cmd;
+		    
+		    // Process blob and css-raw lines
+		    let nl;
+		    
+		    while ((nl = cmd.indexOf('\n')) !== -1) {
+			let line = cmd.slice(0, nl);
+			cmd = cmd.slice(nl + 1);
+			
+			line = line.trim();
+			if (!line) continue;
+			
+			// ── Directives: <!...> ────────────────────────────────────────────────
+			if (line.startsWith('<!')) {
+			    const inner = line.slice(2, -1).trim();
+			    
+			    if (inner.startsWith('blob ')) {
+				// <!blob BLOB-ID PTR LEN MIME>
+				const rest = inner.slice(5);
+				const sp1  = rest.indexOf(' ');
+				if (sp1 === -1) continue;
+				const blobId = rest.slice(0, sp1);
+				const rest2  = rest.slice(sp1 + 1);
+				const sp2    = rest2.indexOf(' ');
+				if (sp2 === -1) continue;
+				const ptr   = parseInt(rest2.slice(0, sp2), 10);
+				const rest3 = rest2.slice(sp2 + 1);
+				const sp3   = rest3.indexOf(' ');
+				if (sp3 === -1) continue;
+				const len  = parseInt(rest3.slice(0, sp3), 10);
+				const mime = rest3.slice(sp3 + 1);
+				const mem  = memory;
+				if (!mem) { console.warn(`dom-blob: memory not available for blob '${blobId}'`); return; }
+
+				const bytes = new Uint8Array(len);
+				bytes.set(new Uint8Array(mem.buffer, ptr, len));
+				const base64 = uint8ToBase64(bytes);
+				
+				const msg = {
+				    type: "show_dom",
+				    cmd: "<!blob>",
+				    mime: mime,
+				    blob_id: blobId,
+				    data: base64,
+				    window_id: windowId
+				};
+				
+				socket.send(JSON.stringify(msg));
+			    }
+			    else if (inner.startsWith('css-raw ')) {
+
+				const parts = inner.slice(8).split(' ');
+				
+				if (parts.length === 2) {
+				    const ptr  = parseInt(parts[0], 10);
+				    const len  = parseInt(parts[1], 10);
+				    const mem  = memory;
+				    const copy = new Uint8Array(len);
+				    copy.set(new Uint8Array(mem.buffer, ptr, len));
+				    const css = new TextDecoder().decode(copy);
+
+				    const msg = {
+					type: "show_dom",
+					cmd: "<!css-raw>",
+					css: css,
+					window_id: windowId
+				    };
+				    
+				    socket.send(JSON.stringify(msg));
+				    
+				}
+			    }
+			}
+		    }
+
+		    const msg = {
+			type: "show_dom",
+			cmd: full_cmd,
+			window_id: windowId
+		    };
+		    
+		    socket.send(JSON.stringify(msg));
+		}
+		else {
+		    // Process complete lines
+		    let nl;
+		    
+		    while ((nl = cmd.indexOf('\n')) !== -1) {
+			const line = cmd.slice(0, nl);
+			cmd = cmd.slice(nl + 1);
+			dom_processor(line);
+		    }
 		}
 
 		Atomics.store(sharedEventArray, 0, 255);
@@ -624,7 +848,7 @@ options:
 
 	console.log(exa.args);
 
-	const [path, pos, trace, info, directories] = parse_args(exa.args);
+	const [path, pos, trace, info, directories, window_id] = parse_args(exa.args);
 
 	if (path) {
 
@@ -638,7 +862,17 @@ options:
 
 		    exa.close(fd).then(function() {
 
-			start_worker(buffer, pos, trace, info, directories);
+		    if (window_id) {
+
+		        do_connect(window_id, () => {
+
+			    start_worker(buffer, pos, trace, info, directories);
+		        });
+		    }
+		    else {
+		        
+		        start_worker(buffer, pos, trace, info, directories);
+		    }
 			
 		    }, function() {
 
@@ -663,15 +897,6 @@ options:
 	}
 
     });
-
-    
-
-    
-    
-      
-
-    
-
     
   </script>
   </body>
